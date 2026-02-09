@@ -13,6 +13,7 @@ const NONCE_CHECK_ERRORS: &str = "signet.filler.nonce_check_errors";
 const PRICING_ERRORS: &str = "signet.filler.pricing_errors";
 const FETCH_ORDER_ERRORS: &str = "signet.filler.fetch_order_errors";
 const CONNECTION_RETRY_ATTEMPTS: &str = "signet.filler.connection_retry_attempts";
+const MISSED_WINDOWS: &str = "signet.filler.missed_windows";
 const CYCLE_DURATION_SECONDS: &str = "signet.filler.cycle_duration_seconds";
 const ORDERS_PER_BUNDLE: &str = "signet.filler.orders_per_bundle";
 
@@ -34,6 +35,10 @@ pub static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
         CONNECTION_RETRY_ATTEMPTS,
         "Connection retry attempts during initialization (label: target = host-provider / \
         rollup-provider / transaction-cache)"
+    );
+    describe_counter!(
+        MISSED_WINDOWS,
+        "Processing cycles skipped because the processing window was missed"
     );
     describe_histogram!(CYCLE_DURATION_SECONDS, "Duration of each processing cycle");
     describe_histogram!(ORDERS_PER_BUNDLE, "Orders in submitted bundles");
@@ -132,6 +137,11 @@ pub fn record_fetch_order_error() {
 /// Record a connection retry attempt for the given target.
 pub fn record_connection_attempt(target: ConnectionTarget) {
     counter!(CONNECTION_RETRY_ATTEMPTS, "target" => target.as_str()).increment(1);
+}
+
+/// Record a missed processing window.
+pub fn record_missed_window() {
+    counter!(MISSED_WINDOWS).increment(1);
 }
 
 /// Record the duration of a processing cycle.
