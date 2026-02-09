@@ -15,6 +15,8 @@ src/filler_task/initialization.rs - Provider/signer/tx-cache connection with ret
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
 src/pricing/mod.rs - PricingClient trait
 src/pricing/static_client.rs - Static pricing implementation (no oracle, sums raw amounts)
+Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookworm-slim)
+.github/workflows/filler-ecr-cd.yml - CD workflow: build and push Docker image to AWS ECR
 ```
 
 ## Build & Run
