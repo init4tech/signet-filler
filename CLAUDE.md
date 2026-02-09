@@ -10,7 +10,7 @@ Order filler service for the Signet Parmigiana testnet. Monitors a transaction c
 bin/filler.rs - Binary entrypoint (tokio multi-thread runtime)
 src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
-src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, profitability checks
+src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, Permit2 nonce fill-check, profitability checks
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
 src/pricing/mod.rs - PricingClient trait

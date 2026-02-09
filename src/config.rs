@@ -16,7 +16,7 @@ const RU_RPC_VAR: &str = "SIGNET_FILLER_ROLLUP_RPC_URL";
 const DEFAULT_CHAIN_NAME: &str = "parmigiana";
 const DEFAULT_HOST_RPC: &str = "https://host-rpc.parmigiana.signet.sh";
 const DEFAULT_RU_RPC: &str = "wss://rpc.parmigiana.signet.sh";
-const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_millis(500);
+const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_secs(2);
 const DEFAULT_MIN_PROFIT_THRESHOLD: u64 = 100;
 const DEFAULT_GAS_ESTIMATE_PER_ORDER: u64 = 150_000;
 const DEFAULT_GAS_PRICE_GWEI: u64 = 1;
@@ -52,7 +52,7 @@ struct ConfigInner {
 
     #[from_env(
         var = "SIGNET_FILLER_BLOCK_LEAD_DURATION_MS",
-        desc = "How far before each block boundary to submit fill bundles, in milliseconds [default: 500]",
+        desc = "How far before each block boundary to submit fill bundles, in milliseconds [default: 2000]",
         optional
     )]
     block_lead_duration_ms: Option<u64>,

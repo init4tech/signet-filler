@@ -4,24 +4,27 @@ use crate::{
 };
 use alloy::{
     network::EthereumWallet,
-    primitives::U256,
+    primitives::{Address, B256, U256, address},
     providers::{
         RootProvider,
         fillers::{FillProvider, JoinFill, WalletFiller},
         utils::JoinedRecommendedFillers,
     },
+    sol,
 };
 use eyre::{Context, Report, Result, bail};
-use futures_util::TryStreamExt;
+use futures_util::{TryStreamExt, future::join_all};
 use init4_bin_base::{
     deps::tracing::{debug, error, info, instrument, trace, warn},
     utils::signer::LocalOrAws,
 };
-use signet_orders::{FeePolicySubmitter, FillerOptions};
+use lru::LruCache;
+use signet_orders::{FeePolicySubmitter, FillerError, FillerOptions};
 use signet_tx_cache::TxCache;
 use signet_types::SignedOrder;
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    num::NonZeroUsize,
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -33,6 +36,16 @@ use tokio_util::sync::CancellationToken;
 
 mod initialization;
 
+// Minimal Permit2 binding for querying the nonce bitmap.
+sol! {
+    #[sol(rpc)]
+    interface IPermit2 {
+        function nonceBitmap(address owner, uint256 wordPos) external view returns (uint256);
+    }
+}
+const PERMIT2: Address = address!("000000000022D473030F116dDEE9F6B43aC78BA3");
+const FILLED_ORDERS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10240).unwrap();
+
 type FillProviderType =
     FillProvider<JoinFill<JoinedRecommendedFillers, WalletFiller<EthereumWallet>>, RootProvider>;
 type Filler = signet_orders::Filler<
@@ -41,11 +54,11 @@ type Filler = signet_orders::Filler<
     FeePolicySubmitter<FillProviderType, FillProviderType, TxCache>,
 >;
 
-/// Order filler service that submits fill bundles shortly before each block
-/// boundary.
+/// Order filler service that submits fill bundles shortly before each block boundary.
 pub struct FillerTask {
     filler: Filler,
     pricing_client: StaticPricingClient,
+    filled_orders: Mutex<LruCache<B256, ()>>,
     block_lead_duration: Duration,
     slot_duration: u64,
     start_timestamp: u64,
@@ -112,9 +125,12 @@ impl FillerTask {
         let slot_duration = host.slot_duration();
         let start_timestamp = host.start_timestamp();
 
+        let filled_orders = Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE));
+
         Ok(Self {
             filler,
             pricing_client,
+            filled_orders,
             block_lead_duration,
             slot_duration,
             start_timestamp,
@@ -172,33 +188,46 @@ impl FillerTask {
 
     #[instrument(parent = None, skip(self))]
     async fn process_orders(&self) -> Result<()> {
-        let orders_count = AtomicUsize::new(0);
-        let profitable_orders: Vec<SignedOrder> = self
+        let mut orders_count = 0usize;
+
+        // Stream: skip orders known to be filled (LRU cache), then filter for profitability.
+        let candidates: Vec<SignedOrder> = self
             .filler
             .get_orders()
             .inspect_ok(|_| {
-                orders_count.fetch_add(1, Ordering::Relaxed);
+                orders_count += 1;
             })
-            .try_filter_map(|order| async { Ok(self.profitable(order).await) })
+            .try_filter_map(|order| self.not_in_filled_cache(order))
+            .try_filter_map(|order| self.profitable(order))
             .try_collect()
             .await
             .wrap_err("failed to fetch orders")?;
 
-        if profitable_orders.is_empty() {
-            let count = orders_count.load(Ordering::Relaxed);
-            if count == 0 {
+        if candidates.is_empty() {
+            if orders_count == 0 {
                 info!("no orders fetched from transaction cache");
             } else {
-                info!(
-                    orders_count = %count,
-                    "fetched orders from transaction cache, but no profitable orders found"
-                );
+                info!(orders_count, "no profitable, unfilled orders found");
             }
             return Ok(());
         }
 
-        let orders_in_bundle = profitable_orders.len();
-        match self.filler.fill(profitable_orders).await {
+        // Check Permit2 nonces concurrently for all profitable candidates.
+        let candidates_len = candidates.len();
+        let orders_to_fill: Vec<SignedOrder> =
+            join_all(candidates.into_iter().map(|order| self.unfilled(order)))
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
+
+        if orders_to_fill.is_empty() {
+            info!(orders_count, candidates_len, "no unfilled orders after nonce check");
+            return Ok(());
+        }
+
+        let orders_in_bundle = orders_to_fill.len();
+        match self.filler.fill(orders_to_fill).await {
             Ok(response) => {
                 info!(
                     bundle_id = %response.id,
@@ -206,13 +235,7 @@ impl FillerTask {
                     "successfully submitted fill bundle"
                 );
             }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    orders_in_bundle,
-                    "failed to fill orders"
-                );
-            }
+            Err(error) => warn!(%error, orders_in_bundle, "failed to fill orders"),
         }
 
         Ok(())
@@ -232,16 +255,35 @@ impl FillerTask {
         now_instant - elapsed
     }
 
-    /// Returns `Some(order)` if the order is profitable, otherwise returns None.
-    async fn profitable(&self, order: SignedOrder) -> Option<SignedOrder> {
+    /// Returns `Ok(Some(order))` if the order is not held in our local cache of known filled
+    /// orders, or `Ok(None)` if not.
+    ///
+    /// Never returns `Err`, but this signature suits usage in `try_filter_map`.
+    async fn not_in_filled_cache(
+        &self,
+        order: SignedOrder,
+    ) -> Result<Option<SignedOrder>, FillerError> {
+        let cached = self.filled_orders.lock().unwrap().contains(order.order_hash());
+        if cached {
+            trace!(order_hash = %order.order_hash(), "skipping cached filled order");
+            Ok(None)
+        } else {
+            Ok(Some(order))
+        }
+    }
+
+    /// Returns `Ok(Some(order))` if the order is profitable, otherwise returns `Ok(None)`.
+    ///
+    /// Never returns `Err`, but this signature suits usage in `try_filter_map`.
+    async fn profitable(&self, order: SignedOrder) -> Result<Option<SignedOrder>, FillerError> {
         match self.pricing_client.is_profitable(&order).await {
             Ok(true) => {
                 trace!(order_hash = %order.order_hash(), "order is profitable");
-                Some(order)
+                Ok(Some(order))
             }
             Ok(false) => {
                 trace!(order_hash = %order.order_hash(), "order is not profitable");
-                None
+                Ok(None)
             }
             Err(error) => {
                 warn!(
@@ -249,8 +291,40 @@ impl FillerTask {
                     error = %error,
                     "failed to check profitability"
                 );
-                None
+                Ok(None)
             }
+        }
+    }
+
+    /// Returns `Some(order)` if its Permit2 nonce has not been consumed on the rollup chain,
+    /// indicating it is still available to fill. Increments `unfilled_count` for each unfilled
+    /// order.
+    async fn unfilled(&self, order: SignedOrder) -> Option<SignedOrder> {
+        let owner = order.permit().owner;
+        let nonce = order.permit().permit.nonce;
+        let word_pos = nonce >> 8;
+        let bit_pos = nonce & U256::from(0xFF);
+
+        let permit2 = IPermit2::new(PERMIT2, self.filler.submitter().ru_provider());
+        let is_filled = match permit2.nonceBitmap(owner, word_pos).call().await {
+            Ok(bitmap) => (bitmap >> bit_pos) & U256::from(1) != U256::ZERO,
+            Err(error) => {
+                warn!(
+                    order_hash = %order.order_hash(),
+                    %error,
+                    "failed to check Permit2 nonce bitmap, assuming not filled"
+                );
+                return Some(order);
+            }
+        };
+
+        if is_filled {
+            trace!(order_hash = %order.order_hash(), "order already filled");
+            self.filled_orders.lock().unwrap().put(*order.order_hash(), ());
+            None
+        } else {
+            trace!(order_hash = %order.order_hash(), "order unfilled");
+            Some(order)
         }
     }
 }

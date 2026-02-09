@@ -39,7 +39,7 @@ impl StaticPricingClient {
 impl PricingClient for StaticPricingClient {
     type Error = StaticPricingError;
 
-    #[instrument(skip(self, order), fields(order_hash = %order.order_hash()))]
+    #[instrument(skip_all)]
     async fn estimate_fill_cost(
         &self,
         order: &SignedOrder,

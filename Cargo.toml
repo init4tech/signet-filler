@@ -24,6 +24,7 @@ axum = "0.8.8"
 
 backon = { version = "1.6.0", features = ["tokio-sleep"] }
 eyre = "0.6.12"
+lru = "0.16.3"
 reqwest = "0.12.28"
 futures-util = "0.3.31"
 itertools = "0.14.0"

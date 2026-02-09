@@ -19,10 +19,11 @@ signet-filler --help
 | `SIGNET_FILLER_CHAIN_NAME` | Signet chain name | `parmigiana` |
 | `SIGNET_FILLER_HOST_RPC_URL` | URL for Host RPC node (http/https/ws/wss) | `https://host-rpc.parmigiana.signet.sh` |
 | `SIGNET_FILLER_ROLLUP_RPC_URL` | URL for Rollup RPC node (ws/wss only) | `wss://rpc.parmigiana.signet.sh` |
-| `SIGNET_FILLER_BLOCK_LEAD_DURATION_MS` | How far before each block boundary to submit fill bundles, in milliseconds | `500` |
+| `SIGNET_FILLER_BLOCK_LEAD_DURATION_MS` | How far before each block boundary to submit fill bundles, in milliseconds | `2000` |
 | `SIGNET_FILLER_MIN_PROFIT_THRESHOLD_WEI` | Minimum profit threshold in wei | `100` |
 | `SIGNET_FILLER_GAS_ESTIMATE_PER_ORDER` | Estimated gas per order fill | `150000` |
 | `SIGNET_FILLER_GAS_PRICE_GWEI` | Assumed gas price in gwei | `1` |
+| `SIGNET_FILLER_HEALTHCHECK_PORT` | Port for the healthcheck HTTP server | `8080` |
 | `SIGNER_KEY` | AWS KMS key ID or local private key | N/A |
 | `SIGNER_CHAIN_ID` | Chain ID for AWS signer [optional] | N/A |
 
@@ -51,10 +52,6 @@ A more reliable approach would be to submit bundles targeting multiple consecuti
 ### Dynamic Block Lead Duration
 
 The `SIGNET_FILLER_BLOCK_LEAD_DURATION_MS` setting is currently a static configuration value. This could be replaced with a dynamically calculated lead duration based on heuristics of historical inclusion rates — adjusting automatically to submit earlier when inclusion rates are low, or later when they are high, to balance freshness of order data against submission reliability.
-
-### Duplicate Fill Avoidance
-
-When a fill bundle is submitted but hasn't landed on-chain yet, the order may still appear in the transaction cache on the next block cycle, resulting in a duplicate fill submission that will revert. This could be avoided by checking on-chain state after each block to distinguish "fill landed, don't retry" from "fill wasn't included, retry next block."
 
 ## License
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
