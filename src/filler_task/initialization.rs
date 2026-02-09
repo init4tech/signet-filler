@@ -9,14 +9,16 @@ use alloy::{
 use backon::{ExponentialBuilder, Retryable};
 use core::fmt::{self, Display, Formatter};
 use eyre::{Context, Result};
-use init4_bin_base::utils::{
-    provider::{ProviderConfig, PubSubConfig},
-    signer::{LocalOrAws, LocalOrAwsConfig},
+use init4_bin_base::{
+    deps::tracing::{debug, info, instrument, warn},
+    utils::{
+        provider::{ProviderConfig, PubSubConfig},
+        signer::{LocalOrAws, LocalOrAwsConfig},
+    },
 };
 use signet_tx_cache::TxCache;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::Duration;
-use tracing::{debug, info, instrument, warn};
 
 #[instrument(skip_all)]
 pub(super) async fn connect_signer(config: &LocalOrAwsConfig) -> Result<LocalOrAws> {

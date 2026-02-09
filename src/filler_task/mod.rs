@@ -11,9 +11,12 @@ use alloy::{
         utils::JoinedRecommendedFillers,
     },
 };
-use eyre::{Context, Result, bail};
+use eyre::{Context, Report, Result, bail};
 use futures_util::TryStreamExt;
-use init4_bin_base::utils::signer::LocalOrAws;
+use init4_bin_base::{
+    deps::tracing::{debug, error, info, instrument, trace, warn},
+    utils::signer::LocalOrAws,
+};
 use signet_orders::{FeePolicySubmitter, FillerOptions};
 use signet_tx_cache::TxCache;
 use signet_types::SignedOrder;
@@ -23,12 +26,10 @@ use std::{
 };
 use tokio::{
     select,
-    task::JoinHandle,
     time::{Duration, Instant, MissedTickBehavior},
     try_join,
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, instrument, trace, warn};
 
 mod initialization;
 
@@ -121,11 +122,27 @@ impl FillerTask {
         })
     }
 
-    pub fn spawn(self) -> JoinHandle<()> {
-        tokio::spawn(self.run())
+    /// Run the filler task to completion.
+    ///
+    /// Spawns the filler loop as a tokio task and supervises it, returning `Ok(())` on graceful
+    /// cancellation or an error if the task exits unexpectedly.
+    pub async fn run(self) -> Result<()> {
+        let cancellation_token = self.cancellation_token.clone();
+        let result = tokio::spawn(self.run_loop()).await;
+        if cancellation_token.is_cancelled() {
+            return Ok(());
+        }
+        cancellation_token.cancel();
+        match result {
+            Ok(()) => bail!("filler task exited without cancellation"),
+            Err(error) if error.is_panic() => {
+                Err(Report::new(error).wrap_err("panic in filler task"))
+            }
+            Err(_) => bail!("filler task cancelled unexpectedly"),
+        }
     }
 
-    async fn run(self) {
+    async fn run_loop(self) {
         info!(
             slot_duration_secs = self.slot_duration,
             block_lead_duration_ms = %self.block_lead_duration.as_millis(),
@@ -151,20 +168,6 @@ impl FillerTask {
                 }
             }
         }
-    }
-
-    /// Returns an [`Instant`] corresponding to the very first submission anchor:
-    /// `start_timestamp - block_lead_duration`. This will typically be far in the past, but that's
-    /// intentional — [`tokio::time::interval_at`] with [`MissedTickBehavior::Skip`] fast-forwards
-    /// over all elapsed ticks and fires at the next one that falls in the future.
-    fn submission_anchor_instant(&self) -> Instant {
-        let anchor =
-            UNIX_EPOCH + Duration::from_secs(self.start_timestamp) - self.block_lead_duration;
-        let now_system = SystemTime::now();
-        let now_instant = Instant::now();
-        let elapsed =
-            now_system.duration_since(anchor).expect("system clock before first submission anchor");
-        now_instant - elapsed
     }
 
     #[instrument(parent = None, skip(self))]
@@ -213,6 +216,20 @@ impl FillerTask {
         }
 
         Ok(())
+    }
+
+    /// Returns an [`Instant`] corresponding to the very first submission anchor:
+    /// `start_timestamp - block_lead_duration`. This will typically be far in the past, but that's
+    /// intentional — [`tokio::time::interval_at`] with [`MissedTickBehavior::Skip`] fast-forwards
+    /// over all elapsed ticks and fires at the next one that falls in the future.
+    fn submission_anchor_instant(&self) -> Instant {
+        let anchor =
+            UNIX_EPOCH + Duration::from_secs(self.start_timestamp) - self.block_lead_duration;
+        let now_system = SystemTime::now();
+        let now_instant = Instant::now();
+        let elapsed =
+            now_system.duration_since(anchor).expect("system clock before first submission anchor");
+        now_instant - elapsed
     }
 
     /// Returns `Some(order)` if the order is profitable, otherwise returns None.

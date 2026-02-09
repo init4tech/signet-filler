@@ -20,6 +20,7 @@ const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_millis(500);
 const DEFAULT_MIN_PROFIT_THRESHOLD: u64 = 100;
 const DEFAULT_GAS_ESTIMATE_PER_ORDER: u64 = 150_000;
 const DEFAULT_GAS_PRICE_GWEI: u64 = 1;
+const DEFAULT_HEALTHCHECK_PORT: u16 = 8080;
 
 /// Internal configuration loaded directly from environment variables.
 #[derive(Debug, FromEnv)]
@@ -77,6 +78,13 @@ struct ConfigInner {
     )]
     gas_price_gwei: Option<u64>,
 
+    #[from_env(
+        var = "SIGNET_FILLER_HEALTHCHECK_PORT",
+        desc = "Port for the healthcheck HTTP server [default: 8080]",
+        optional
+    )]
+    healthcheck_port: Option<u16>,
+
     signer: LocalOrAwsConfig,
 }
 
@@ -93,6 +101,7 @@ pub struct Config {
     min_profit_threshold_wei: u64,
     gas_estimate_per_order: u64,
     gas_price_gwei: u64,
+    healthcheck_port: u16,
     signer: LocalOrAwsConfig,
     constants: SignetConstants,
 }
@@ -133,6 +142,11 @@ impl Config {
         self.gas_price_gwei
     }
 
+    /// Port for the healthcheck HTTP server.
+    pub fn healthcheck_port(&self) -> u16 {
+        self.healthcheck_port
+    }
+
     /// Signer configuration for transaction signing.
     pub fn signer(&self) -> &LocalOrAwsConfig {
         &self.signer
@@ -152,6 +166,7 @@ impl Config {
             min_profit_threshold_wei,
             gas_estimate_per_order,
             gas_price_gwei,
+            healthcheck_port,
             signer,
         } = ConfigInner::from_env()?;
         let chain_name = chain_name.unwrap_or(DEFAULT_CHAIN_NAME.to_string());
@@ -179,6 +194,7 @@ impl Config {
         let gas_estimate_per_order =
             gas_estimate_per_order.unwrap_or(DEFAULT_GAS_ESTIMATE_PER_ORDER);
         let gas_price_gwei = gas_price_gwei.unwrap_or(DEFAULT_GAS_PRICE_GWEI);
+        let healthcheck_port = healthcheck_port.unwrap_or(DEFAULT_HEALTHCHECK_PORT);
 
         Ok(Config {
             chain_name,
@@ -188,6 +204,7 @@ impl Config {
             min_profit_threshold_wei,
             gas_estimate_per_order,
             gas_price_gwei,
+            healthcheck_port,
             signer,
             constants,
         })

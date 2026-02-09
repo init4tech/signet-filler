@@ -1,5 +1,6 @@
 use init4_bin_base::deps::tracing::debug;
-use signet_filler::{FillerTask, config_from_env, env_var_info};
+use signet_filler::{FillerTask, config_from_env, env_var_info, serve_healthcheck};
+use tokio::join;
 
 fn should_print_help() -> bool {
     std::env::args().any(|arg| {
@@ -40,10 +41,8 @@ async fn main() -> eyre::Result<()> {
         Err(error) => return Err(error),
     };
 
-    match filler_task.spawn().await {
-        Err(error) if error.is_panic() => {
-            Err(eyre::Report::new(error).wrap_err("panic running filler task"))
-        }
-        Err(_) | Ok(_) => Ok(()),
-    }
+    let (filler_result, server_result) =
+        join!(filler_task.run(), serve_healthcheck(config.healthcheck_port(), cancellation_token));
+    filler_result?;
+    server_result
 }

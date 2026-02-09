@@ -20,6 +20,7 @@ signet-tx-cache = "0.16.0-rc.8"
 signet-types = "0.16.0-rc.8"
 
 alloy = { version = "1.6.1", features = ["full", "signer-local"] }
+axum = "0.8.8"
 
 backon = { version = "1.6.0", features = ["tokio-sleep"] }
 eyre = "0.6.12"

@@ -12,6 +12,7 @@ src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
 src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, profitability checks
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
+src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
 src/pricing/mod.rs - PricingClient trait
 src/pricing/static_client.rs - Static pricing implementation (no oracle, sums raw amounts)
 ```
@@ -29,6 +30,7 @@ src/pricing/static_client.rs - Static pricing implementation (no oracle, sums ra
 - **signet-sdk crates** (`signet-constants`, `signet-orders`, `signet-tx-cache`, `signet-types`): Currently patched to git `main` branch
 - **alloy**: Ethereum provider/signer/types
 - **backon**: Retry with exponential backoff for provider connections
+- **axum**: HTTP server for healthcheck endpoint
 - **eyre**: Error handling (`Result`, `WrapErr`)
 
 ## Conventions
@@ -38,7 +40,3 @@ src/pricing/static_client.rs - Static pricing implementation (no oracle, sums ra
 - Provider connections retry indefinitely on transient errors using `backon`
 - The filler loop uses `tokio::time::interval_at` aligned to chain slot boundaries minus `block_lead_duration`
 - Graceful shutdown via `CancellationToken` propagated through all async tasks
-
-## Known TODOs
-
-See `bin/filler.rs` test `toodoo` for the current list, including: metrics/otel, tests, health endpoints, Docker, CI.

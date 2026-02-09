@@ -1,7 +1,7 @@
 use super::{FillCostEstimate, PricingClient};
 use alloy::primitives::U256;
+use init4_bin_base::deps::tracing::{instrument, trace};
 use signet_types::SignedOrder;
-use tracing::{instrument, trace};
 
 #[derive(Debug, Clone)]
 pub struct StaticPricingClient {

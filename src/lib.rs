@@ -14,6 +14,9 @@ pub use filler_task::FillerTask;
 
 pub mod pricing;
 
+mod service;
+pub use service::serve_healthcheck;
+
 pub fn handle_signals() -> Result<CancellationToken> {
     let cancellation_token = CancellationToken::new();
 
