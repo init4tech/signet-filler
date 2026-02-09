@@ -1,4 +1,5 @@
 use super::FillProviderType;
+use crate::metrics::{self, ConnectionTarget};
 use alloy::{
     network::EthereumWallet,
     providers::{Provider, ProviderBuilder},
@@ -33,7 +34,7 @@ pub(super) async fn connect_to_host_provider(
     config: &ProviderConfig,
     wallet: EthereumWallet,
 ) -> Result<FillProviderType> {
-    connect_provider_with_retry("host provider", || async {
+    connect_provider_with_retry(ConnectionTarget::HostProvider, || async {
         let provider = config.connect().await?;
         provider.get_chain_id().await?;
         Ok(ProviderBuilder::new().wallet(wallet.clone()).connect_provider(provider))
@@ -46,7 +47,7 @@ pub(super) async fn connect_to_rollup_provider(
     config: &PubSubConfig,
     wallet: EthereumWallet,
 ) -> Result<FillProviderType> {
-    connect_provider_with_retry("rollup provider", || async {
+    connect_provider_with_retry(ConnectionTarget::RollupProvider, || async {
         let provider = config.connect().await?;
         provider.get_chain_id().await?;
         Ok(ProviderBuilder::new().wallet(wallet.clone()).connect_provider(provider))
@@ -77,6 +78,7 @@ pub(super) async fn connect_to_tx_cache(url: &str) -> Result<TxCache> {
         .retry(backoff())
         .when(is_transient_reqwest_error)
         .notify(|error, duration| {
+            metrics::record_connection_attempt(ConnectionTarget::TxCache);
             warn!(
                 error = %error,
                 attempt = attempt.fetch_add(1, Ordering::Relaxed),
@@ -99,12 +101,16 @@ fn backoff() -> ExponentialBuilder {
         .without_max_times()
 }
 
-async fn connect_provider_with_retry<F, Fut, T>(name: &'static str, connect_fn: F) -> Result<T>
+async fn connect_provider_with_retry<F, Fut, T>(
+    target: ConnectionTarget,
+    connect_fn: F,
+) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, RpcError<TransportErrorKind>>>,
 {
-    debug!(provider = name, "connecting");
+    let name = target.as_str();
+    debug!(provider = %name, "connecting");
 
     let attempt = AtomicUsize::new(1);
 
@@ -112,9 +118,10 @@ where
         .retry(backoff())
         .when(is_transient_transport_error)
         .notify(|error, duration| {
+            metrics::record_connection_attempt(target);
             warn!(
                 error = ?error,
-                provider = name,
+                provider = %name,
                 attempt = attempt.fetch_add(1, Ordering::Relaxed),
                 retry_in_ms = duration.as_millis(),
                 "transient error connecting"
@@ -123,7 +130,7 @@ where
         .await
         .wrap_err_with(|| format!("failed to connect to {name}"))?;
 
-    info!(provider = name, "connected");
+    info!(provider = %name, "connected");
     Ok(result)
 }
 

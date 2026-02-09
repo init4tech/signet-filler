@@ -12,6 +12,7 @@ src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
 src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, Permit2 nonce fill-check, profitability checks
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
+src/metrics.rs - Prometheus metric definitions and recording helpers (counters, gauges, histograms)
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
 src/pricing/mod.rs - PricingClient trait
 src/pricing/static_client.rs - Static pricing implementation (no oracle, sums raw amounts)
@@ -33,6 +34,7 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - **alloy**: Ethereum provider/signer/types
 - **backon**: Retry with exponential backoff for provider connections
 - **axum**: HTTP server for healthcheck endpoint
+- **metrics**: Prometheus metrics (counters, gauges, histograms) — exporter initialized by `init4-bin-base::init4()` on port 9000
 - **eyre**: Error handling (`Result`, `WrapErr`)
 
 ## Conventions

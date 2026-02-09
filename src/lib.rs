@@ -12,6 +12,8 @@ pub use config::{Config, config_from_env, env_var_info};
 mod filler_task;
 pub use filler_task::FillerTask;
 
+mod metrics;
+
 pub mod pricing;
 
 mod service;

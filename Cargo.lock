@@ -5223,6 +5223,7 @@ dependencies = [
  "init4-bin-base",
  "itertools 0.14.0",
  "lru",
+ "metrics",
  "reqwest",
  "signet-constants",
  "signet-orders",

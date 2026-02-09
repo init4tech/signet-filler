@@ -1,5 +1,5 @@
 use crate::{
-    Config,
+    Config, metrics,
     pricing::{PricingClient, StaticPricingClient},
 };
 use alloy::{
@@ -24,7 +24,7 @@ use signet_tx_cache::TxCache;
 use signet_types::SignedOrder;
 use std::{
     num::NonZeroUsize,
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -61,7 +61,8 @@ pub struct FillerTask {
     filled_orders: Mutex<LruCache<B256, ()>>,
     block_lead_duration: Duration,
     slot_duration: u64,
-    start_timestamp: u64,
+    host_start_timestamp: u64,
+    app_start_instant: Instant,
     cancellation_token: CancellationToken,
 }
 
@@ -72,6 +73,8 @@ impl FillerTask {
         config: &Config,
         cancellation_token: CancellationToken,
     ) -> Result<Self> {
+        LazyLock::force(&metrics::DESCRIPTIONS);
+        let app_start_instant = Instant::now();
         let constants = config.constants();
 
         let signer = initialization::connect_signer(config.signer()).await?;
@@ -119,13 +122,12 @@ impl FillerTask {
             config.gas_estimate_per_order(),
             config.gas_price_gwei(),
         );
-
-        let host = constants.system().host();
-        let block_lead_duration = config.block_lead_duration();
-        let slot_duration = host.slot_duration();
-        let start_timestamp = host.start_timestamp();
-
         let filled_orders = Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE));
+
+        let block_lead_duration = config.block_lead_duration();
+        let host = constants.system().host();
+        let slot_duration = host.slot_duration();
+        let host_start_timestamp = host.start_timestamp();
 
         Ok(Self {
             filler,
@@ -133,7 +135,8 @@ impl FillerTask {
             filled_orders,
             block_lead_duration,
             slot_duration,
-            start_timestamp,
+            host_start_timestamp,
+            app_start_instant,
             cancellation_token,
         })
     }
@@ -178,6 +181,7 @@ impl FillerTask {
                     break;
                 }
                 _ = interval.tick() => {
+                    metrics::record_uptime(self.app_start_instant.elapsed());
                     if let Err(e) = self.process_orders().await {
                         error!(error = %e, "error processing orders");
                     }
@@ -188,7 +192,8 @@ impl FillerTask {
 
     #[instrument(parent = None, skip(self))]
     async fn process_orders(&self) -> Result<()> {
-        let mut orders_count = 0usize;
+        let cycle_start = Instant::now();
+        let mut orders_count = 0_u64;
 
         // Stream: skip orders known to be filled (LRU cache), then filter for profitability.
         let candidates: Vec<SignedOrder> = self
@@ -201,7 +206,10 @@ impl FillerTask {
             .try_filter_map(|order| self.profitable(order))
             .try_collect()
             .await
+            .inspect_err(|_| metrics::record_fetch_order_error())
             .wrap_err("failed to fetch orders")?;
+
+        metrics::record_orders_fetched(orders_count);
 
         if candidates.is_empty() {
             if orders_count == 0 {
@@ -209,6 +217,8 @@ impl FillerTask {
             } else {
                 info!(orders_count, "no profitable, unfilled orders found");
             }
+            metrics::record_cycle();
+            metrics::record_cycle_duration(cycle_start.elapsed());
             return Ok(());
         }
 
@@ -223,6 +233,8 @@ impl FillerTask {
 
         if orders_to_fill.is_empty() {
             info!(orders_count, candidates_len, "no unfilled orders after nonce check");
+            metrics::record_cycle();
+            metrics::record_cycle_duration(cycle_start.elapsed());
             return Ok(());
         }
 
@@ -234,20 +246,28 @@ impl FillerTask {
                     orders_in_bundle,
                     "successfully submitted fill bundle"
                 );
+                metrics::record_bundle(metrics::SubmissionResult::Success);
+                metrics::record_orders_in_bundle(orders_in_bundle as u64);
+                metrics::record_orders_per_bundle(orders_in_bundle as f64);
             }
-            Err(error) => warn!(%error, orders_in_bundle, "failed to fill orders"),
+            Err(error) => {
+                warn!(%error, orders_in_bundle, "failed to fill orders");
+                metrics::record_bundle(metrics::SubmissionResult::Failure);
+            }
         }
 
+        metrics::record_cycle();
+        metrics::record_cycle_duration(cycle_start.elapsed());
         Ok(())
     }
 
     /// Returns an [`Instant`] corresponding to the very first submission anchor:
-    /// `start_timestamp - block_lead_duration`. This will typically be far in the past, but that's
-    /// intentional — [`tokio::time::interval_at`] with [`MissedTickBehavior::Skip`] fast-forwards
-    /// over all elapsed ticks and fires at the next one that falls in the future.
+    /// `host_start_timestamp - block_lead_duration`. This will typically be far in the past, but
+    /// that's intentional — [`tokio::time::interval_at`] with [`MissedTickBehavior::Skip`]
+    /// fast-forwards over all elapsed ticks and fires at the next one that falls in the future.
     fn submission_anchor_instant(&self) -> Instant {
         let anchor =
-            UNIX_EPOCH + Duration::from_secs(self.start_timestamp) - self.block_lead_duration;
+            UNIX_EPOCH + Duration::from_secs(self.host_start_timestamp) - self.block_lead_duration;
         let now_system = SystemTime::now();
         let now_instant = Instant::now();
         let elapsed =
@@ -266,6 +286,7 @@ impl FillerTask {
         let cached = self.filled_orders.lock().unwrap().contains(order.order_hash());
         if cached {
             trace!(order_hash = %order.order_hash(), "skipping cached filled order");
+            metrics::record_order_skipped(metrics::OrderSkippedReason::AlreadyFilled);
             Ok(None)
         } else {
             Ok(Some(order))
@@ -283,6 +304,7 @@ impl FillerTask {
             }
             Ok(false) => {
                 trace!(order_hash = %order.order_hash(), "order is not profitable");
+                metrics::record_order_skipped(metrics::OrderSkippedReason::NotProfitable);
                 Ok(None)
             }
             Err(error) => {
@@ -291,6 +313,7 @@ impl FillerTask {
                     error = %error,
                     "failed to check profitability"
                 );
+                metrics::record_pricing_error();
                 Ok(None)
             }
         }
@@ -314,6 +337,7 @@ impl FillerTask {
                     %error,
                     "failed to check Permit2 nonce bitmap, assuming not filled"
                 );
+                metrics::record_nonce_check_error();
                 return Some(order);
             }
         };
@@ -321,6 +345,7 @@ impl FillerTask {
         if is_filled {
             trace!(order_hash = %order.order_hash(), "order already filled");
             self.filled_orders.lock().unwrap().put(*order.order_hash(), ());
+            metrics::record_order_skipped(metrics::OrderSkippedReason::AlreadyFilled);
             None
         } else {
             trace!(order_hash = %order.order_hash(), "order unfilled");
