@@ -169,9 +169,13 @@ impl FillerTask {
         );
 
         let slot_duration = Duration::from_secs(self.slot_duration);
+        let staleness_threshold = Duration::from_millis(100).max(self.block_lead_duration / 4);
         let first_tick = self.submission_anchor_instant();
         let mut interval = tokio::time::interval_at(first_tick, slot_duration);
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        // The first tick fires immediately with a large elapsed time; consume it.
+        interval.tick().await;
 
         loop {
             select! {
@@ -180,8 +184,17 @@ impl FillerTask {
                     debug!("filler task cancelled");
                     break;
                 }
-                _ = interval.tick() => {
+                ticked_at = interval.tick() => {
                     metrics::record_uptime(self.app_start_instant.elapsed());
+                    let staleness = ticked_at.elapsed();
+                    if staleness > staleness_threshold {
+                        warn!(
+                            staleness_ms = %staleness.as_millis(),
+                            "missed processing window, skipping cycle"
+                        );
+                        metrics::record_missed_window();
+                        continue;
+                    }
                     if let Err(e) = self.process_orders().await {
                         error!(error = %e, "error processing orders");
                     }
