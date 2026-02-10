@@ -340,11 +340,10 @@ impl FillerTask {
         let owner = order.permit().owner;
         let nonce = order.permit().permit.nonce;
         let word_pos = nonce >> 8;
-        let bit_pos = nonce & U256::from(0xFF);
 
         let permit2 = IPermit2::new(PERMIT2, self.filler.submitter().ru_provider());
         let is_filled = match permit2.nonceBitmap(owner, word_pos).call().await {
-            Ok(bitmap) => (bitmap >> bit_pos) & U256::from(1) != U256::ZERO,
+            Ok(bitmap) => is_nonce_consumed(bitmap, nonce),
             Err(error) => {
                 warn!(
                     order_hash = %order.order_hash(),
@@ -365,5 +364,62 @@ impl FillerTask {
             trace!(order_hash = %order.order_hash(), "order unfilled");
             Some(order)
         }
+    }
+}
+
+/// Returns `true` if the given nonce has been consumed according to the Permit2 bitmap.
+///
+/// Permit2 stores nonces as a bitmap: the high 248 bits select the word, the low 8 bits select
+/// the bit within that word. This function checks the bit for `nonce` within `bitmap`.
+fn is_nonce_consumed(bitmap: U256, nonce: U256) -> bool {
+    let bit_pos = nonce & U256::from(0xFF);
+    (bitmap >> bit_pos) & U256::from(1) != U256::ZERO
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nonce_0_consumed_when_bit_0_set() {
+        let bitmap = U256::from(1);
+        assert!(is_nonce_consumed(bitmap, U256::from(0)));
+    }
+
+    #[test]
+    fn nonce_0_not_consumed_when_bit_0_unset() {
+        let bitmap = U256::from(0);
+        assert!(!is_nonce_consumed(bitmap, U256::from(0)));
+    }
+
+    #[test]
+    fn nonce_255_consumed_when_last_bit_set() {
+        let bitmap = U256::from(1) << 255;
+        assert!(is_nonce_consumed(bitmap, U256::from(255)));
+    }
+
+    #[test]
+    fn nonce_255_not_consumed_when_last_bit_unset() {
+        let bitmap = U256::MAX ^ (U256::from(1) << 255);
+        assert!(!is_nonce_consumed(bitmap, U256::from(255)));
+    }
+
+    #[test]
+    fn mid_range_nonce_consumed_among_other_bits() {
+        let bitmap = U256::from(0b1111) | (U256::from(1) << 42);
+        assert!(is_nonce_consumed(bitmap, U256::from(42)));
+    }
+
+    #[test]
+    fn mid_range_nonce_not_consumed_when_only_neighbours_set() {
+        let bitmap = (U256::from(1) << 41) | (U256::from(1) << 43);
+        assert!(!is_nonce_consumed(bitmap, U256::from(42)));
+    }
+
+    #[test]
+    fn nonce_word_bits_ignored() {
+        // Nonce 0x12A (word=1, bit=42). Only the low 8 bits matter for the bitmap check.
+        let bitmap = U256::from(1) << 42;
+        assert!(is_nonce_consumed(bitmap, U256::from(0x12A)));
     }
 }
