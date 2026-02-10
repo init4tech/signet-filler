@@ -376,6 +376,9 @@ fn is_nonce_consumed(bitmap: U256, nonce: U256) -> bool {
     (bitmap >> bit_pos) & U256::from(1) != U256::ZERO
 }
 
+/// These tests are based on [the canonical tests].
+///
+/// [the canonical tests]: https://github.com/Uniswap/permit2/blob/main/test/NonceBitmap.t.sol#L9
 #[cfg(test)]
 mod tests {
     use super::*;

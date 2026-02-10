@@ -140,7 +140,7 @@ pub(crate) fn record_connection_attempt(target: ConnectionTarget) {
 }
 
 /// Record a missed processing window.
-pub fn record_missed_window() {
+pub(crate) fn record_missed_window() {
     counter!(MISSED_WINDOWS).increment(1);
 }
 
