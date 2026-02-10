@@ -3,14 +3,16 @@ use alloy::primitives::U256;
 use init4_bin_base::deps::tracing::{instrument, trace};
 use signet_types::SignedOrder;
 
-#[derive(Debug, Clone)]
+/// Pricing client that uses static gas estimates and raw token amount
+/// sums (no oracle).
+#[derive(Debug, Clone, Copy)]
 pub struct StaticPricingClient {
     min_profit_threshold: U256,
     gas_estimate_per_order: u64,
     gas_price_gwei: u64,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, Copy, thiserror::Error)]
 pub enum StaticPricingError {
     #[error("order has no inputs")]
     NoInputs,
@@ -19,6 +21,7 @@ pub enum StaticPricingError {
 }
 
 impl StaticPricingClient {
+    /// Create a new [`StaticPricingClient`].
     pub const fn new(
         min_profit_threshold: U256,
         gas_estimate_per_order: u64,

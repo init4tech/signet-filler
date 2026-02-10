@@ -1,3 +1,17 @@
+//! Signet filler service for Parmigiana testnet
+
+#![warn(
+    missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs,
+    unreachable_pub,
+    clippy::missing_const_for_fn,
+    rustdoc::all
+)]
+#![cfg_attr(not(test), warn(unused_crate_dependencies))]
+#![deny(unused_must_use, rust_2018_idioms)]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+
 use eyre::{Result, WrapErr};
 use init4_bin_base::deps::tracing::{debug, info};
 use tokio::{
@@ -14,11 +28,14 @@ pub use filler_task::FillerTask;
 
 mod metrics;
 
+/// Order pricing and profitability estimation.
 pub mod pricing;
 
 mod service;
 pub use service::serve_healthcheck;
 
+/// Register signal handlers for graceful shutdown, returning a
+/// [`CancellationToken`] that is cancelled on SIGINT or SIGTERM.
 pub fn handle_signals() -> Result<CancellationToken> {
     let cancellation_token = CancellationToken::new();
 

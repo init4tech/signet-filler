@@ -55,6 +55,7 @@ type Filler = signet_orders::Filler<
 >;
 
 /// Order filler service that submits fill bundles shortly before each block boundary.
+#[derive(Debug)]
 pub struct FillerTask {
     filler: Filler,
     pricing_client: StaticPricingClient,
