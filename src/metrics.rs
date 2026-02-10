@@ -18,7 +18,7 @@ const CYCLE_DURATION_SECONDS: &str = "signet.filler.cycle_duration_seconds";
 const ORDERS_PER_BUNDLE: &str = "signet.filler.orders_per_bundle";
 
 /// Force evaluation to register all metric descriptions with the exporter.
-pub static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
+pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
     describe_gauge!(UPTIME_SECONDS, "Seconds since signet-filler started");
     describe_counter!(CYCLES, "Processing cycles completed");
     describe_counter!(ORDERS_FETCHED, "Orders fetched from tx cache");
@@ -44,13 +44,13 @@ pub static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
     describe_histogram!(ORDERS_PER_BUNDLE, "Orders in submitted bundles");
 });
 
-pub enum OrderSkippedReason {
+pub(crate) enum OrderSkippedReason {
     AlreadyFilled,
     NotProfitable,
 }
 
 impl OrderSkippedReason {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             OrderSkippedReason::AlreadyFilled => "already-filled",
             OrderSkippedReason::NotProfitable => "not-profitable",
@@ -58,13 +58,13 @@ impl OrderSkippedReason {
     }
 }
 
-pub enum SubmissionResult {
+pub(crate) enum SubmissionResult {
     Success,
     Failure,
 }
 
 impl SubmissionResult {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             SubmissionResult::Success => "success",
             SubmissionResult::Failure => "failure",
@@ -73,14 +73,14 @@ impl SubmissionResult {
 }
 
 #[derive(Clone, Copy)]
-pub enum ConnectionTarget {
+pub(crate) enum ConnectionTarget {
     HostProvider,
     RollupProvider,
     TxCache,
 }
 
 impl ConnectionTarget {
-    pub fn as_str(&self) -> &'static str {
+    pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             ConnectionTarget::HostProvider => "host-provider",
             ConnectionTarget::RollupProvider => "rollup-provider",
@@ -90,52 +90,52 @@ impl ConnectionTarget {
 }
 
 /// Record uptime gauge.
-pub fn record_uptime(elapsed: Duration) {
+pub(crate) fn record_uptime(elapsed: Duration) {
     gauge!(UPTIME_SECONDS).set(elapsed.as_secs_f64());
 }
 
 /// Increment the cycle counter.
-pub fn record_cycle() {
+pub(crate) fn record_cycle() {
     counter!(CYCLES).increment(1);
 }
 
 /// Record how many orders were fetched from the tx cache.
-pub fn record_orders_fetched(count: u64) {
+pub(crate) fn record_orders_fetched(count: u64) {
     counter!(ORDERS_FETCHED).increment(count);
 }
 
 /// Record an order skipped for the given reason.
-pub fn record_order_skipped(reason: OrderSkippedReason) {
+pub(crate) fn record_order_skipped(reason: OrderSkippedReason) {
     counter!(ORDERS_SKIPPED, "reason" => reason.as_str()).increment(1);
 }
 
 /// Record orders included in a submitted bundle.
-pub fn record_orders_in_bundle(count: u64) {
+pub(crate) fn record_orders_in_bundle(count: u64) {
     counter!(ORDERS_IN_BUNDLES).increment(count);
 }
 
 /// Record a bundle submission result.
-pub fn record_bundle(result: SubmissionResult) {
+pub(crate) fn record_bundle(result: SubmissionResult) {
     counter!(BUNDLES, "result" => result.as_str()).increment(1);
 }
 
 /// Record a Permit2 nonce check error.
-pub fn record_nonce_check_error() {
+pub(crate) fn record_nonce_check_error() {
     counter!(NONCE_CHECK_ERRORS).increment(1);
 }
 
 /// Record a pricing evaluation error.
-pub fn record_pricing_error() {
+pub(crate) fn record_pricing_error() {
     counter!(PRICING_ERRORS).increment(1);
 }
 
 /// Record an error fetching orders from the tx cache.
-pub fn record_fetch_order_error() {
+pub(crate) fn record_fetch_order_error() {
     counter!(FETCH_ORDER_ERRORS).increment(1);
 }
 
 /// Record a connection retry attempt for the given target.
-pub fn record_connection_attempt(target: ConnectionTarget) {
+pub(crate) fn record_connection_attempt(target: ConnectionTarget) {
     counter!(CONNECTION_RETRY_ATTEMPTS, "target" => target.as_str()).increment(1);
 }
 
@@ -145,11 +145,11 @@ pub fn record_missed_window() {
 }
 
 /// Record the duration of a processing cycle.
-pub fn record_cycle_duration(elapsed: Duration) {
+pub(crate) fn record_cycle_duration(elapsed: Duration) {
     histogram!(CYCLE_DURATION_SECONDS).record(elapsed.as_secs_f64());
 }
 
 /// Record the number of orders in a submitted bundle.
-pub fn record_orders_per_bundle(count: f64) {
+pub(crate) fn record_orders_per_bundle(count: f64) {
     histogram!(ORDERS_PER_BUNDLE).record(count);
 }

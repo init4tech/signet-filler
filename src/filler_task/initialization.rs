@@ -93,7 +93,7 @@ pub(super) async fn connect_to_tx_cache(url: &str) -> Result<TxCache> {
     Ok(tx_cache)
 }
 
-fn backoff() -> ExponentialBuilder {
+const fn backoff() -> ExponentialBuilder {
     ExponentialBuilder::new()
         .with_factor(1.5)
         .with_min_delay(Duration::from_millis(100))

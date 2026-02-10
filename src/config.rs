@@ -113,47 +113,47 @@ impl Config {
     }
 
     /// URL for Host RPC node.
-    pub fn host_rpc(&self) -> &ProviderConfig {
+    pub const fn host_rpc(&self) -> &ProviderConfig {
         &self.host_rpc
     }
 
     /// URL for the Rollup RPC node.
-    pub fn ru_rpc(&self) -> &PubSubConfig {
+    pub const fn ru_rpc(&self) -> &PubSubConfig {
         &self.ru_rpc
     }
 
     /// How far before each block boundary to submit fill bundles.
-    pub fn block_lead_duration(&self) -> Duration {
+    pub const fn block_lead_duration(&self) -> Duration {
         self.block_lead_duration
     }
 
     /// Minimum profit threshold in wei for filling orders.
-    pub fn min_profit_threshold_wei(&self) -> u64 {
+    pub const fn min_profit_threshold_wei(&self) -> u64 {
         self.min_profit_threshold_wei
     }
 
     /// Estimated gas per order fill for cost calculations.
-    pub fn gas_estimate_per_order(&self) -> u64 {
+    pub const fn gas_estimate_per_order(&self) -> u64 {
         self.gas_estimate_per_order
     }
 
     /// Assumed gas price in gwei for cost estimation.
-    pub fn gas_price_gwei(&self) -> u64 {
+    pub const fn gas_price_gwei(&self) -> u64 {
         self.gas_price_gwei
     }
 
     /// Port for the healthcheck HTTP server.
-    pub fn healthcheck_port(&self) -> u16 {
+    pub const fn healthcheck_port(&self) -> u16 {
         self.healthcheck_port
     }
 
     /// Signer configuration for transaction signing.
-    pub fn signer(&self) -> &LocalOrAwsConfig {
+    pub const fn signer(&self) -> &LocalOrAwsConfig {
         &self.signer
     }
 
     /// Chain-specific constants derived from the chain name.
-    pub fn constants(&self) -> &SignetConstants {
+    pub const fn constants(&self) -> &SignetConstants {
         &self.constants
     }
 
