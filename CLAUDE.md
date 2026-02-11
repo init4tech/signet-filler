@@ -1,6 +1,6 @@
 # Signet Filler
 
-**Keep this file up to date.** After any change to the repo (new files, renamed modules, added dependencies, changed conventions, etc.), update the relevant sections of this document before finishing.
+**Keep this file and the readme up to date.** After any change to the repo (new files, renamed modules, added dependencies, changed conventions, etc.), update the relevant sections of this document and the README.md before finishing.
 
 Order filler service for the Signet Parmigiana testnet. Monitors a transaction cache for pending orders, evaluates profitability, and submits fill bundles shortly before each block boundary.
 
@@ -14,8 +14,8 @@ src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order proc
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
 src/metrics.rs - Prometheus metric definitions and recording helpers (counters, gauges, histograms)
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
-src/pricing/mod.rs - PricingClient trait
-src/pricing/static_client.rs - Static pricing implementation (no oracle, sums raw amounts)
+src/pricing/mod.rs - PricingClient trait, FillCostEstimate
+src/pricing/radius_client.rs - Radius solver API pricing (queries GET /api/rfq/quote for profitability); supports 1→1, N→1, and 1→M order shapes with parallel quoting and two-round split estimation
 Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookworm-slim)
 .github/workflows/filler-ecr-cd.yml - CD workflow: build and push Docker image to AWS ECR
 ```
@@ -35,6 +35,8 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - **backon**: Retry with exponential backoff for provider connections
 - **axum**: HTTP server for healthcheck endpoint
 - **metrics**: Prometheus metrics (counters, gauges, histograms) — exporter initialized by `init4-bin-base::init4()` on port 9000
+- **reqwest**: HTTP client for Radius solver API (with `json` feature)
+- **serde**: Deserialization of Radius API responses
 - **eyre**: Error handling (`Result`, `WrapErr`)
 
 ## Conventions

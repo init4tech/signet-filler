@@ -1,6 +1,6 @@
 use crate::{
     Config, metrics,
-    pricing::{PricingClient, StaticPricingClient},
+    pricing::{PricingClient, RadiusPricingClient},
 };
 use alloy::{
     network::EthereumWallet,
@@ -58,7 +58,7 @@ type Filler = signet_orders::Filler<
 #[derive(Debug)]
 pub struct FillerTask {
     filler: Filler,
-    pricing_client: StaticPricingClient,
+    pricing_client: RadiusPricingClient,
     filled_orders: Mutex<LruCache<B256, ()>>,
     block_lead_duration: Duration,
     slot_duration: u64,
@@ -118,10 +118,10 @@ impl FillerTask {
             FillerOptions::new(),
         );
 
-        let pricing_client = StaticPricingClient::new(
-            U256::from(config.min_profit_threshold_wei()),
-            config.gas_estimate_per_order(),
-            config.gas_price_gwei(),
+        let pricing_client = RadiusPricingClient::new(
+            config.radius_url().to_string(),
+            config.radius_bearer_token().to_string(),
+            constants.system().ru_chain_id(),
         );
         let filled_orders = Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE));
 
@@ -196,8 +196,8 @@ impl FillerTask {
                         metrics::record_missed_window();
                         continue;
                     }
-                    if let Err(e) = self.process_orders().await {
-                        error!(error = %e, "error processing orders");
+                    if let Err(error) = self.process_orders().await {
+                        error!(%error, "error processing orders");
                     }
                 }
             }
@@ -324,7 +324,7 @@ impl FillerTask {
             Err(error) => {
                 warn!(
                     order_hash = %order.order_hash(),
-                    error = %error,
+                    %error,
                     "failed to check profitability"
                 );
                 metrics::record_pricing_error();

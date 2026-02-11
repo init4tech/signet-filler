@@ -5225,6 +5225,7 @@ dependencies = [
  "lru",
  "metrics",
  "reqwest",
+ "serde",
  "signet-constants",
  "signet-orders",
  "signet-tx-cache",

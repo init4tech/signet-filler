@@ -16,10 +16,8 @@ const RU_RPC_VAR: &str = "SIGNET_FILLER_ROLLUP_RPC_URL";
 const DEFAULT_CHAIN_NAME: &str = "parmigiana";
 const DEFAULT_HOST_RPC: &str = "https://host-rpc.parmigiana.signet.sh";
 const DEFAULT_RU_RPC: &str = "wss://rpc.parmigiana.signet.sh";
+const DEFAULT_RADIUS_URL: &str = "https://graham-findarticles-rugs-its.trycloudflare.com";
 const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_secs(2);
-const DEFAULT_MIN_PROFIT_THRESHOLD: u64 = 100;
-const DEFAULT_GAS_ESTIMATE_PER_ORDER: u64 = 150_000;
-const DEFAULT_GAS_PRICE_GWEI: u64 = 1;
 const DEFAULT_HEALTHCHECK_PORT: u16 = 8080;
 
 /// Internal configuration loaded directly from environment variables.
@@ -34,21 +32,32 @@ struct ConfigInner {
 
     #[from_env(
         var = "SIGNET_FILLER_HOST_RPC_URL",
-        desc =
-            "URL for Host RPC node. This MUST be a valid HTTP or WS URL, starting with http://, \
-            https://, ws:// or wss:// [default: https://host-rpc.parmigiana.signet.sh]"
+        desc = "URL for Host RPC node. This MUST be a valid HTTP or WS URL, starting with http://, \
+            https://, ws:// or wss:// [default: https://host-rpc.parmigiana.signet.sh]",
         optional
     )]
     host_rpc: Option<String>,
 
     #[from_env(
         var = "SIGNET_FILLER_ROLLUP_RPC_URL",
-        desc =
-            "URL for Rollup RPC node. This MUST be a valid WS url starting with ws:// or wss://. \
-            Http providers are not supported [default: wss://rpc.parmigiana.signet.sh]"
+        desc = "URL for Rollup RPC node. This MUST be a valid WS url starting with ws:// or wss://. \
+            Http providers are not supported [default: wss://rpc.parmigiana.signet.sh]",
         optional
     )]
     ru_rpc: Option<String>,
+
+    #[from_env(
+        var = "SIGNET_FILLER_RADIUS_URL",
+        desc = "Base URL for the Radius solver API [default: https://graham-findarticles-rugs-its.trycloudflare.com]",
+        optional
+    )]
+    radius_url: Option<String>,
+
+    #[from_env(
+        var = "SIGNET_FILLER_RADIUS_BEARER_TOKEN",
+        desc = "Bearer token for Radius solver API"
+    )]
+    radius_bearer_token: String,
 
     #[from_env(
         var = "SIGNET_FILLER_BLOCK_LEAD_DURATION_MS",
@@ -56,27 +65,6 @@ struct ConfigInner {
         optional
     )]
     block_lead_duration_ms: Option<u64>,
-
-    #[from_env(
-        var = "SIGNET_FILLER_MIN_PROFIT_THRESHOLD_WEI",
-        desc = "Minimum profit threshold in wei [default: 100]",
-        optional
-    )]
-    min_profit_threshold_wei: Option<u64>,
-
-    #[from_env(
-        var = "SIGNET_FILLER_GAS_ESTIMATE_PER_ORDER",
-        desc = "Estimated gas per order fill [default: 150000]",
-        optional
-    )]
-    gas_estimate_per_order: Option<u64>,
-
-    #[from_env(
-        var = "SIGNET_FILLER_GAS_PRICE_GWEI",
-        desc = "Assumed gas price in gwei for cost estimation [default: 1]",
-        optional
-    )]
-    gas_price_gwei: Option<u64>,
 
     #[from_env(
         var = "SIGNET_FILLER_HEALTHCHECK_PORT",
@@ -97,10 +85,9 @@ pub struct Config {
     chain_name: String,
     host_rpc: ProviderConfig,
     ru_rpc: PubSubConfig,
+    radius_url: String,
+    radius_bearer_token: String,
     block_lead_duration: Duration,
-    min_profit_threshold_wei: u64,
-    gas_estimate_per_order: u64,
-    gas_price_gwei: u64,
     healthcheck_port: u16,
     signer: LocalOrAwsConfig,
     constants: SignetConstants,
@@ -122,24 +109,19 @@ impl Config {
         &self.ru_rpc
     }
 
+    /// Base URL for the Radius solver API.
+    pub fn radius_url(&self) -> &str {
+        &self.radius_url
+    }
+
+    /// Bearer token for the Radius solver API.
+    pub fn radius_bearer_token(&self) -> &str {
+        &self.radius_bearer_token
+    }
+
     /// How far before each block boundary to submit fill bundles.
     pub const fn block_lead_duration(&self) -> Duration {
         self.block_lead_duration
-    }
-
-    /// Minimum profit threshold in wei for filling orders.
-    pub const fn min_profit_threshold_wei(&self) -> u64 {
-        self.min_profit_threshold_wei
-    }
-
-    /// Estimated gas per order fill for cost calculations.
-    pub const fn gas_estimate_per_order(&self) -> u64 {
-        self.gas_estimate_per_order
-    }
-
-    /// Assumed gas price in gwei for cost estimation.
-    pub const fn gas_price_gwei(&self) -> u64 {
-        self.gas_price_gwei
     }
 
     /// Port for the healthcheck HTTP server.
@@ -162,10 +144,9 @@ impl Config {
             chain_name,
             host_rpc,
             ru_rpc,
+            radius_url,
+            radius_bearer_token,
             block_lead_duration_ms,
-            min_profit_threshold_wei,
-            gas_estimate_per_order,
-            gas_price_gwei,
             healthcheck_port,
             signer,
         } = ConfigInner::from_env()?;
@@ -189,11 +170,7 @@ impl Config {
         let block_lead_duration = block_lead_duration_ms
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_BLOCK_LEAD_DURATION);
-        let min_profit_threshold_wei =
-            min_profit_threshold_wei.unwrap_or(DEFAULT_MIN_PROFIT_THRESHOLD);
-        let gas_estimate_per_order =
-            gas_estimate_per_order.unwrap_or(DEFAULT_GAS_ESTIMATE_PER_ORDER);
-        let gas_price_gwei = gas_price_gwei.unwrap_or(DEFAULT_GAS_PRICE_GWEI);
+        let radius_url = radius_url.unwrap_or(DEFAULT_RADIUS_URL.to_string());
         let healthcheck_port = healthcheck_port.unwrap_or(DEFAULT_HEALTHCHECK_PORT);
 
         Ok(Config {
@@ -201,9 +178,8 @@ impl Config {
             host_rpc,
             ru_rpc,
             block_lead_duration,
-            min_profit_threshold_wei,
-            gas_estimate_per_order,
-            gas_price_gwei,
+            radius_url,
+            radius_bearer_token,
             healthcheck_port,
             signer,
             constants,

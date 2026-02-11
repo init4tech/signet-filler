@@ -1,6 +1,6 @@
-mod static_client;
+mod radius_client;
 
-pub use static_client::StaticPricingClient;
+pub use radius_client::RadiusPricingClient;
 
 use alloy::primitives::U256;
 use core::future::Future;
@@ -9,9 +9,11 @@ use signet_types::SignedOrder;
 /// Breakdown of estimated costs and values for filling an order.
 #[derive(Debug, Clone, Copy)]
 pub struct FillCostEstimate {
-    /// Estimated gas units required.
+    /// Estimated gas units required. Currently always zero — gas estimation
+    /// is not yet implemented, so profitability checks ignore gas costs.
     pub estimated_gas: u64,
-    /// Estimated gas cost in wei.
+    /// Estimated gas cost in wei. Currently always zero — gas estimation
+    /// is not yet implemented, so profitability checks ignore gas costs.
     pub estimated_gas_cost: U256,
     /// Sum of all input token amounts.
     pub total_input_value: U256,
