@@ -18,7 +18,6 @@ jobs:
     with:
       rust-binary-name: signet-filler
       environment: dev
-      requires-private-deps: true
     secrets:
       aws-ecr-repository: ${{ secrets.AWS_ECR_REPOSITORY }}
       aws-ecr-deployer-role-arn: ${{ secrets.AWS_ECR_DEPLOYER_ROLE_ARN }}
