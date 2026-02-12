@@ -14,10 +14,10 @@ path = "bin/filler.rs"
 
 [dependencies]
 init4-bin-base = { version = "0.18.0-rc.8", features = ["aws"] }
-signet-constants = "0.16.0-rc.8"
-signet-orders = "0.16.0-rc.8"
-signet-tx-cache = "0.16.0-rc.8"
-signet-types = "0.16.0-rc.8"
+signet-constants = "0.16.0-rc.9"
+signet-orders = "0.16.0-rc.9"
+signet-tx-cache = "0.16.0-rc.9"
+signet-types = "0.16.0-rc.9"
 
 alloy = { version = "1.6.1", features = ["full", "signer-local"] }
 axum = "0.8.8"
@@ -33,10 +33,3 @@ thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "time", "signal"] }
 tokio-util = "0.7.18"
 tracing = "0.1.44"
-
-[patch.crates-io]
-#init4-bin-base = { path = "/home/fraser/dev/init4/bin-base" }
-signet-constants = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
-signet-orders = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
-signet-tx-cache = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
-signet-types = { git = "https://github.com/init4tech/signet-sdk", branch = "main" }
