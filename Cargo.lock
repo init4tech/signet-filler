@@ -5276,6 +5276,7 @@ dependencies = [
  "signet-orders",
  "signet-tx-cache",
  "signet-types",
+ "signet-zenith",
  "thiserror",
  "tokio",
  "tokio-util",

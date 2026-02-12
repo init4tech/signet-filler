@@ -1,8 +1,8 @@
 # Signet Filler
 
-**Keep this file up to date.** After any change to the repo (new files, renamed modules, added dependencies, changed conventions, etc.), update the relevant sections of this document before finishing.
+**Keep this file and the readme up to date.** After any change to the repo (new files, renamed modules, added dependencies, changed conventions, etc.), update the relevant sections of this document and the README.md before finishing.
 
-Order filler service for the Signet Parmigiana testnet. Monitors a transaction cache for pending orders, evaluates profitability, and submits fill bundles shortly before each block boundary.
+Order filler service for the Signet Parmigiana testnet. Monitors a transaction cache for pending orders, checks they are within an acceptable loss threshold using hardcoded exchange rates, and submits fill bundles shortly before each block boundary.
 
 ## Project Structure
 
@@ -10,12 +10,11 @@ Order filler service for the Signet Parmigiana testnet. Monitors a transaction c
 bin/filler.rs - Binary entrypoint (tokio multi-thread runtime)
 src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
-src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, Permit2 nonce fill-check, profitability checks
+src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, Permit2 nonce fill-check, acceptable loss checks
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
 src/metrics.rs - Prometheus metric definitions and recording helpers (counters, gauges, histograms)
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
-src/pricing/mod.rs - PricingClient trait
-src/pricing/static_client.rs - Static pricing implementation (no oracle, sums raw amounts)
+src/fixed_pricing_client.rs - Fixed pricing with hardcoded token exchange rates and max loss threshold
 Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookworm-slim)
 .github/workflows/filler-ecr-cd.yml - CD workflow: build and push Docker image to AWS ECR
 ```
@@ -30,7 +29,7 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 ## Key Dependencies
 
 - **init4-bin-base**: Shared init4 binary utilities (tracing init via `init4()`, AWS/local signer, provider configs, `FromEnv` derive)
-- **signet-sdk crates** (`signet-constants`, `signet-orders`, `signet-tx-cache`, `signet-types`): Currently patched to git `main` branch
+- **signet-sdk crates** (`signet-constants`, `signet-orders`, `signet-tx-cache`, `signet-types`): Signet chain types and constants
 - **alloy**: Ethereum provider/signer/types
 - **backon**: Retry with exponential backoff for provider connections
 - **axum**: HTTP server for healthcheck endpoint

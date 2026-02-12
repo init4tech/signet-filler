@@ -1,7 +1,4 @@
-use crate::{
-    Config, metrics,
-    pricing::{PricingClient, StaticPricingClient},
-};
+use crate::{Config, FixedPricingClient, FixedPricingError, metrics};
 use alloy::{
     network::EthereumWallet,
     primitives::{Address, B256, U256, address},
@@ -58,7 +55,7 @@ type Filler = signet_orders::Filler<
 #[derive(Debug)]
 pub struct FillerTask {
     filler: Filler,
-    pricing_client: StaticPricingClient,
+    pricing_client: FixedPricingClient,
     filled_orders: Mutex<LruCache<B256, ()>>,
     block_lead_duration: Duration,
     slot_duration: u64,
@@ -77,6 +74,13 @@ impl FillerTask {
         LazyLock::force(&metrics::DESCRIPTIONS);
         let app_start_instant = Instant::now();
         let constants = config.constants();
+
+        if config.max_loss_percent() > 100 {
+            bail!(
+                "invalid config value for max loss percent ({}), must be in range [0, 100]",
+                config.max_loss_percent()
+            );
+        }
 
         let signer = initialization::connect_signer(config.signer()).await?;
         let wallet = EthereumWallet::from(signer.clone());
@@ -118,10 +122,10 @@ impl FillerTask {
             FillerOptions::new(),
         );
 
-        let pricing_client = StaticPricingClient::new(
-            U256::from(config.min_profit_threshold_wei()),
-            config.gas_estimate_per_order(),
-            config.gas_price_gwei(),
+        let pricing_client = FixedPricingClient::new(
+            constants.system(),
+            config.chain_name(),
+            config.max_loss_percent(),
         );
         let filled_orders = Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE));
 
@@ -196,8 +200,8 @@ impl FillerTask {
                         metrics::record_missed_window();
                         continue;
                     }
-                    if let Err(e) = self.process_orders().await {
-                        error!(error = %e, "error processing orders");
+                    if let Err(error) = self.process_orders().await {
+                        error!(%error, "error processing orders");
                     }
                 }
             }
@@ -209,7 +213,7 @@ impl FillerTask {
         let cycle_start = Instant::now();
         let mut orders_count = 0_u64;
 
-        // Stream: skip orders known to be filled (LRU cache), then filter for profitability.
+        // Stream: skip filled orders (LRU cache), then check acceptable loss threshold.
         let candidates: Vec<SignedOrder> = self
             .filler
             .get_orders()
@@ -217,7 +221,7 @@ impl FillerTask {
                 orders_count += 1;
             })
             .try_filter_map(|order| self.not_in_filled_cache(order))
-            .try_filter_map(|order| self.profitable(order))
+            .try_filter_map(|order| async { self.acceptable(order) })
             .try_collect()
             .await
             .inspect_err(|_| metrics::record_fetch_order_error())
@@ -229,7 +233,7 @@ impl FillerTask {
             if orders_count == 0 {
                 info!("no orders fetched from transaction cache");
             } else {
-                info!(orders_count, "no profitable, unfilled orders found");
+                info!(orders_count, "no acceptable, unfilled orders found");
             }
             metrics::record_cycle();
             metrics::record_cycle_duration(cycle_start.elapsed());
@@ -307,25 +311,35 @@ impl FillerTask {
         }
     }
 
-    /// Returns `Ok(Some(order))` if the order is profitable, otherwise returns `Ok(None)`.
+    /// Returns `Ok(Some(order))` if the order is within the acceptable loss threshold,
+    /// otherwise `Ok(None)`.
     ///
     /// Never returns `Err`, but this signature suits usage in `try_filter_map`.
-    async fn profitable(&self, order: SignedOrder) -> Result<Option<SignedOrder>, FillerError> {
-        match self.pricing_client.is_profitable(&order).await {
+    fn acceptable(&self, order: SignedOrder) -> Result<Option<SignedOrder>, FillerError> {
+        match self.pricing_client.is_acceptable(&order) {
             Ok(true) => {
-                trace!(order_hash = %order.order_hash(), "order is profitable");
+                trace!(order_hash = %order.order_hash(), "order is within acceptable loss threshold");
                 Ok(Some(order))
             }
             Ok(false) => {
-                trace!(order_hash = %order.order_hash(), "order is not profitable");
-                metrics::record_order_skipped(metrics::OrderSkippedReason::NotProfitable);
+                trace!(order_hash = %order.order_hash(), "order exceeds acceptable loss threshold");
+                metrics::record_order_skipped(metrics::OrderSkippedReason::ExceedsMaxLoss);
+                Ok(None)
+            }
+            Err(FixedPricingError::UnknownToken(token)) => {
+                warn!(
+                    order_hash = %order.order_hash(),
+                    %token,
+                    "order contains unknown token, skipping"
+                );
+                metrics::record_order_skipped(metrics::OrderSkippedReason::UnknownToken);
                 Ok(None)
             }
             Err(error) => {
                 warn!(
                     order_hash = %order.order_hash(),
-                    error = %error,
-                    "failed to check profitability"
+                    %error,
+                    "failed to check acceptable loss threshold"
                 );
                 metrics::record_pricing_error();
                 Ok(None)

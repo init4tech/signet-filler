@@ -28,8 +28,8 @@ pub use filler_task::FillerTask;
 
 mod metrics;
 
-/// Order pricing and profitability estimation.
-pub mod pricing;
+mod fixed_pricing_client;
+use fixed_pricing_client::{FixedPricingClient, FixedPricingError};
 
 mod service;
 pub use service::serve_healthcheck;
