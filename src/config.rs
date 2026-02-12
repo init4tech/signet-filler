@@ -40,7 +40,7 @@ struct ConfigInner {
 
     #[from_env(
         var = "SIGNET_FILLER_ROLLUP_RPC_URL",
-        desc = "URL for Rollup RPC node. This MUST be a valid WS url starting with ws:// or
+        desc = "URL for Rollup RPC node. This MUST be a valid WS url starting with ws:// or \
             wss://. Http providers are not supported [default: wss://rpc.parmigiana.signet.sh]",
         optional
     )]
