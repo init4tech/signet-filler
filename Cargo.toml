@@ -21,15 +21,17 @@ signet-types = "0.16.0-rc.9"
 
 alloy = { version = "1.6.1", features = ["full", "signer-local"] }
 axum = "0.8.8"
-
 backon = { version = "1.6.0", features = ["tokio-sleep"] }
 eyre = "0.6.12"
+futures-util = "0.3.31"
+itertools = "0.14.0"
 lru = "0.16.3"
 metrics = "0.24.3"
 reqwest = "0.12.28"
-futures-util = "0.3.31"
-itertools = "0.14.0"
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "time", "signal"] }
 tokio-util = "0.7.18"
 tracing = "0.1.44"
+
+[dev-dependencies]
+signet-zenith = "0.16.0-rc.9"

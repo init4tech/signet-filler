@@ -29,17 +29,11 @@ signet-filler --help
 
 ## Limitations
 
-### Static Pricing
+### Fixed Pricing
 
-The current implementation uses a static pricing model that sums raw token amounts without price conversion. This means:
+The current implementation uses hardcoded USD exchange rates and decimal counts for a set of known tokens (USDC, USDT, WETH, WBTC, and the native/wrapped rollup token). Orders referencing any other token will be rejected with an `UnknownToken` error.
 
-- Profitability calculations assume all input and output tokens have equivalent value per unit
-- No price oracle integration or token price lookups
-- No decimal normalization between different tokens
-
-This approach works for **single-token orders** (e.g., same-asset transfers between rollup and host), but will produce incorrect profitability assessments for multi-token swaps.
-
-Dynamic pricing with real token valuations will be added once integration with Radius' pricing API is available.
+A future improvement could handle unknown tokens by querying the ERC-20 contract on-chain for `decimals()` and `totalSupply()`, then assuming total supply represents a fixed USD value (e.g. $10k) to derive a token price. This would allow the filler to process orders for arbitrary tokens rather than only the hardcoded set.
 
 ### Single-Block Bundle Submission
 

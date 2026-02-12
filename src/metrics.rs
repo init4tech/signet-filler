@@ -24,7 +24,7 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
     describe_counter!(ORDERS_FETCHED, "Orders fetched from tx cache");
     describe_counter!(
         ORDERS_SKIPPED,
-        "Orders skipped (label: reason = already-filled / not-profitable)"
+        "Orders skipped (label: reason = already-filled / exceeds-max-loss / unknown-token)"
     );
     describe_counter!(ORDERS_IN_BUNDLES, "Orders included in submitted fill bundles");
     describe_counter!(BUNDLES, "Bundle submissions (label: result = success / failure)");
@@ -46,14 +46,16 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
 
 pub(crate) enum OrderSkippedReason {
     AlreadyFilled,
-    NotProfitable,
+    ExceedsMaxLoss,
+    UnknownToken,
 }
 
 impl OrderSkippedReason {
     pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             OrderSkippedReason::AlreadyFilled => "already-filled",
-            OrderSkippedReason::NotProfitable => "not-profitable",
+            OrderSkippedReason::ExceedsMaxLoss => "exceeds-max-loss",
+            OrderSkippedReason::UnknownToken => "unknown-token",
         }
     }
 }
