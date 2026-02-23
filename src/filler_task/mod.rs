@@ -1,13 +1,12 @@
 use crate::{Config, FixedPricingClient, FixedPricingError, metrics};
 use alloy::{
     network::EthereumWallet,
-    primitives::{Address, B256, U256, address},
+    primitives::B256,
     providers::{
         RootProvider,
         fillers::{FillProvider, JoinFill, WalletFiller},
         utils::JoinedRecommendedFillers,
     },
-    sol,
 };
 use eyre::{Context, Report, Result, bail};
 use futures_util::{TryStreamExt, future::join_all};
@@ -33,14 +32,6 @@ use tokio_util::sync::CancellationToken;
 
 mod initialization;
 
-// Minimal Permit2 binding for querying the nonce bitmap.
-sol! {
-    #[sol(rpc)]
-    interface IPermit2 {
-        function nonceBitmap(address owner, uint256 wordPos) external view returns (uint256);
-    }
-}
-const PERMIT2: Address = address!("000000000022D473030F116dDEE9F6B43aC78BA3");
 const FILLED_ORDERS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10240).unwrap();
 
 type FillProviderType =
@@ -257,10 +248,10 @@ impl FillerTask {
         }
 
         let orders_in_bundle = orders_to_fill.len();
-        match self.filler.fill(orders_to_fill).await {
-            Ok(response) => {
+        match self.filler.fill(orders_to_fill, 1).await {
+            Ok(responses) => {
                 info!(
-                    bundle_id = %response.id,
+                    bundle_ids = ?responses.iter().map(|response| response.id).collect::<Vec<_>>(),
                     orders_in_bundle,
                     "successfully submitted fill bundle"
                 );
@@ -351,13 +342,13 @@ impl FillerTask {
     /// indicating it is still available to fill. Increments `unfilled_count` for each unfilled
     /// order.
     async fn unfilled(&self, order: SignedOrder) -> Option<SignedOrder> {
-        let owner = order.permit().owner;
-        let nonce = order.permit().permit.nonce;
-        let word_pos = nonce >> 8;
-
-        let permit2 = IPermit2::new(PERMIT2, self.filler.submitter().ru_provider());
-        let is_filled = match permit2.nonceBitmap(owner, word_pos).call().await {
-            Ok(bitmap) => is_nonce_consumed(bitmap, nonce),
+        let is_filled = match signet_orders::permit2::is_order_nonce_consumed(
+            self.filler.submitter().ru_provider(),
+            &order,
+        )
+        .await
+        {
+            Ok(consumed) => consumed,
             Err(error) => {
                 warn!(
                     order_hash = %order.order_hash(),
@@ -378,65 +369,5 @@ impl FillerTask {
             trace!(order_hash = %order.order_hash(), "order unfilled");
             Some(order)
         }
-    }
-}
-
-/// Returns `true` if the given nonce has been consumed according to the Permit2 bitmap.
-///
-/// Permit2 stores nonces as a bitmap: the high 248 bits select the word, the low 8 bits select
-/// the bit within that word. This function checks the bit for `nonce` within `bitmap`.
-fn is_nonce_consumed(bitmap: U256, nonce: U256) -> bool {
-    let bit_pos = nonce & U256::from(0xFF);
-    (bitmap >> bit_pos) & U256::from(1) != U256::ZERO
-}
-
-/// These tests are based on [the canonical tests].
-///
-/// [the canonical tests]: https://github.com/Uniswap/permit2/blob/main/test/NonceBitmap.t.sol#L9
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn nonce_0_consumed_when_bit_0_set() {
-        let bitmap = U256::from(1);
-        assert!(is_nonce_consumed(bitmap, U256::from(0)));
-    }
-
-    #[test]
-    fn nonce_0_not_consumed_when_bit_0_unset() {
-        let bitmap = U256::from(0);
-        assert!(!is_nonce_consumed(bitmap, U256::from(0)));
-    }
-
-    #[test]
-    fn nonce_255_consumed_when_last_bit_set() {
-        let bitmap = U256::from(1) << 255;
-        assert!(is_nonce_consumed(bitmap, U256::from(255)));
-    }
-
-    #[test]
-    fn nonce_255_not_consumed_when_last_bit_unset() {
-        let bitmap = U256::MAX ^ (U256::from(1) << 255);
-        assert!(!is_nonce_consumed(bitmap, U256::from(255)));
-    }
-
-    #[test]
-    fn mid_range_nonce_consumed_among_other_bits() {
-        let bitmap = U256::from(0b1111) | (U256::from(1) << 42);
-        assert!(is_nonce_consumed(bitmap, U256::from(42)));
-    }
-
-    #[test]
-    fn mid_range_nonce_not_consumed_when_only_neighbours_set() {
-        let bitmap = (U256::from(1) << 41) | (U256::from(1) << 43);
-        assert!(!is_nonce_consumed(bitmap, U256::from(42)));
-    }
-
-    #[test]
-    fn nonce_word_bits_ignored() {
-        // Nonce 0x12A (word=1, bit=42). Only the low 8 bits matter for the bitmap check.
-        let bitmap = U256::from(1) << 42;
-        assert!(is_nonce_consumed(bitmap, U256::from(0x12A)));
     }
 }
