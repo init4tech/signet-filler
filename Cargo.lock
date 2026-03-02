@@ -5173,8 +5173,9 @@ dependencies = [
 
 [[package]]
 name = "signet-bundle"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfa2fe03812ab99d2036031619b3f97bbdf63297ac77b87aa560120a7245ae7a"
 dependencies = [
  "alloy",
  "serde",
@@ -5188,8 +5189,9 @@ dependencies = [
 
 [[package]]
 name = "signet-constants"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d6378927249ba3670e5fb5d1be901cd35efa69cbf08ddbdbc49a3988a4a9248"
 dependencies = [
  "alloy",
  "serde",
@@ -5199,8 +5201,9 @@ dependencies = [
 
 [[package]]
 name = "signet-evm"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "263c69e5500d468f18b0548513824aa7e5126293db4e9a04324a9113dd7b8cc0"
 dependencies = [
  "alloy",
  "bitflags",
@@ -5215,8 +5218,9 @@ dependencies = [
 
 [[package]]
 name = "signet-extract"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3914ff36ed2878e6874913165e58d4d361dce52ab33482de5fbc25d1995a18f7"
 dependencies = [
  "alloy",
  "signet-types",
@@ -5251,8 +5255,9 @@ dependencies = [
 
 [[package]]
 name = "signet-journal"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdf4aea3b233f619d616290b2537beac179eb998a94329332ab51483f9e7af5d"
 dependencies = [
  "alloy",
  "futures-util",
@@ -5262,8 +5267,9 @@ dependencies = [
 
 [[package]]
 name = "signet-orders"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dad26a4a8492edf1595d7ba13835ddd7cebdd8f48ed22bb213377bb46e4de7b0"
 dependencies = [
  "alloy",
  "chrono",
@@ -5279,8 +5285,9 @@ dependencies = [
 
 [[package]]
 name = "signet-tx-cache"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abffd23afca1a30322f367dd6e8f20b286d128b0e04825f78b028a6787a82733"
 dependencies = [
  "alloy",
  "futures-util",
@@ -5297,8 +5304,9 @@ dependencies = [
 
 [[package]]
 name = "signet-types"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe93f554c0ba3305bf4709187b9b37c633917169c1e8911defe4fa1be3821b6c"
 dependencies = [
  "alloy",
  "chrono",
@@ -5310,8 +5318,9 @@ dependencies = [
 
 [[package]]
 name = "signet-zenith"
-version = "0.16.0-rc.11"
-source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1872%2Fupdate-fill#75accefc2328281061a8fe08877e1a12ef313844"
+version = "0.16.0-rc.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3667f24d434d57fba10e64f7c5b974ed978d39507221a465b5cbb042772972c"
 dependencies = [
  "alloy",
  "alloy-core",

@@ -14,10 +14,10 @@ path = "bin/filler.rs"
 
 [dependencies]
 init4-bin-base = { version = "0.18.0-rc.8", features = ["aws"] }
-signet-constants = "0.16.0-rc.11"
-signet-orders = "0.16.0-rc.11"
-signet-tx-cache = "0.16.0-rc.11"
-signet-types = "0.16.0-rc.11"
+signet-constants = "0.16.0-rc.12"
+signet-orders = "0.16.0-rc.12"
+signet-tx-cache = "0.16.0-rc.12"
+signet-types = "0.16.0-rc.12"
 
 alloy = { version = "1.6.1", features = ["full", "signer-local"] }
 axum = "0.8.8"
@@ -34,11 +34,4 @@ tokio-util = "0.7.18"
 tracing = "0.1.44"
 
 [dev-dependencies]
-signet-zenith = "0.16.0-rc.11"
-
-[patch.crates-io]
-signet-constants = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1872/update-fill" }
-signet-orders = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1872/update-fill" }
-signet-tx-cache = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1872/update-fill" }
-signet-types = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1872/update-fill" }
-signet-zenith = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1872/update-fill" }
+signet-zenith = "0.16.0-rc.12"
