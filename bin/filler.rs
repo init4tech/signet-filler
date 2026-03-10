@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use init4_bin_base::deps::tracing::debug;
 use signet_filler::{FillerTask, config_from_env, env_var_info, serve_healthcheck};
 use tokio::join;
