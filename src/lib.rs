@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![deny(unused_must_use, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
+#![recursion_limit = "256"]
 
 use eyre::{Result, WrapErr};
 use init4_bin_base::deps::tracing::{debug, info};
