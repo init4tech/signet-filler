@@ -32,6 +32,7 @@ async fn main() -> eyre::Result<()> {
         return Ok(());
     }
 
+    #[expect(deprecated, reason = "ticketed to be fixed in ENG-1990")]
     let _guard = init4_bin_base::init4();
     let config = config_from_env()?;
     debug!(chain = %config.constants().environment().rollup_name(), "starting filler");
