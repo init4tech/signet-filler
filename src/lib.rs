@@ -13,6 +13,14 @@
 #![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![recursion_limit = "256"]
 
+use alloy::{
+    network::EthereumWallet,
+    providers::{
+        RootProvider,
+        fillers::{FillProvider, JoinFill, WalletFiller},
+        utils::JoinedRecommendedFillers,
+    },
+};
 use eyre::{Result, WrapErr};
 use init4_bin_base::deps::tracing::{debug, info};
 use tokio::{
@@ -21,8 +29,15 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod chain_token_pair;
+pub(crate) use chain_token_pair::ChainTokenPair;
+
 mod config;
 pub use config::{Config, config_from_env, env_var_info};
+
+mod allowance;
+pub(crate) use allowance::AllowanceCache;
+pub use allowance::AllowanceRefreshTask;
 
 mod filler_task;
 pub use filler_task::FillerTask;
@@ -32,8 +47,14 @@ mod metrics;
 mod fixed_pricing_client;
 use fixed_pricing_client::{FixedPricingClient, FixedPricingError};
 
+mod initialization;
+pub use initialization::FillerContext;
+
 mod service;
 pub use service::serve_healthcheck;
+
+pub(crate) type FillProviderType =
+    FillProvider<JoinFill<JoinedRecommendedFillers, WalletFiller<EthereumWallet>>, RootProvider>;
 
 /// Register signal handlers for graceful shutdown, returning a
 /// [`CancellationToken`] that is cancelled on SIGINT or SIGTERM.

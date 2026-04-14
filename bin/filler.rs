@@ -1,7 +1,10 @@
 #![recursion_limit = "256"]
 
 use init4_bin_base::deps::tracing::debug;
-use signet_filler::{FillerTask, config_from_env, env_var_info, serve_healthcheck};
+use signet_filler::{
+    AllowanceRefreshTask, FillerContext, FillerTask, config_from_env, env_var_info,
+    serve_healthcheck,
+};
 use tokio::join;
 
 fn should_print_help() -> bool {
@@ -38,14 +41,21 @@ async fn main() -> eyre::Result<()> {
     debug!(chain = %config.constants().environment().rollup_name(), "starting filler");
 
     let cancellation_token = signet_filler::handle_signals()?;
-    let filler_task = match FillerTask::initialize(&config, cancellation_token.clone()).await {
-        Ok(task) => task,
+    let context = match FillerContext::initialize(config, cancellation_token.clone()).await {
+        Ok(context) => context,
         Err(_) if cancellation_token.is_cancelled() => return Ok(()),
         Err(error) => return Err(error),
     };
 
-    let (filler_result, server_result) =
-        join!(filler_task.run(), serve_healthcheck(config.healthcheck_port(), cancellation_token));
+    let filler_task = FillerTask::new(&context)?;
+    let allowance_task = AllowanceRefreshTask::initialize(&context).await;
+    let healthcheck_port = context.healthcheck_port();
+
+    let (filler_result, _, server_result) = join!(
+        filler_task.run(),
+        allowance_task.run(),
+        serve_healthcheck(healthcheck_port, cancellation_token),
+    );
     filler_result?;
     server_result
 }

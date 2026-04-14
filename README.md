@@ -2,7 +2,7 @@
 
 A filler service for the Signet network that monitors pending orders and fills profitable ones.
 
-The filler checks the transaction cache for pending orders shortly before each block boundary, evaluates their profitability, and submits fill bundles for orders that meet the configured profit threshold. It connects to both the host chain and rollup RPC endpoints, using a configurable signer for transaction signing.
+The filler checks the transaction cache for pending orders shortly before each block boundary, evaluates their profitability, and submits fill bundles for orders that meet the configured profit threshold. Before checking nonces, orders are filtered against the filler wallet's token balances and Permit2 allowances so that orders the filler cannot cover are discarded early. It connects to both the host chain and rollup RPC endpoints, using a configurable signer for transaction signing.
 
 ## Configuration
 

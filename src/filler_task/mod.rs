@@ -1,13 +1,7 @@
-use crate::{Config, FixedPricingClient, FixedPricingError, metrics};
-use alloy::{
-    network::EthereumWallet,
-    primitives::B256,
-    providers::{
-        RootProvider,
-        fillers::{FillProvider, JoinFill, WalletFiller},
-        utils::JoinedRecommendedFillers,
-    },
+use crate::{
+    AllowanceCache, FillProviderType, FillerContext, FixedPricingClient, FixedPricingError, metrics,
 };
+use alloy::{primitives::B256, signers::Signer};
 use eyre::{Context, Report, Result, bail};
 use futures_util::{TryStreamExt, future::join_all};
 use init4_bin_base::{
@@ -19,23 +13,22 @@ use signet_orders::{FeePolicySubmitter, FillerError, FillerOptions};
 use signet_tx_cache::TxCache;
 use signet_types::SignedOrder;
 use std::{
+    collections::HashSet,
     num::NonZeroUsize,
-    sync::{LazyLock, Mutex},
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     select,
     time::{Duration, Instant, MissedTickBehavior},
-    try_join,
 };
 use tokio_util::sync::CancellationToken;
 
-mod initialization;
+mod preflight;
+use preflight::WorkingMap;
 
 const FILLED_ORDERS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10240).unwrap();
 
-type FillProviderType =
-    FillProvider<JoinFill<JoinedRecommendedFillers, WalletFiller<EthereumWallet>>, RootProvider>;
 type Filler = signet_orders::Filler<
     LocalOrAws,
     TxCache,
@@ -47,6 +40,7 @@ type Filler = signet_orders::Filler<
 pub struct FillerTask {
     filler: Filler,
     pricing_client: FixedPricingClient,
+    allowance_cache: AllowanceCache,
     filled_orders: Mutex<LruCache<B256, ()>>,
     block_lead_duration: Duration,
     slot_duration: u64,
@@ -57,45 +51,12 @@ pub struct FillerTask {
 
 impl FillerTask {
     /// Create a new filler from configuration.
-    #[instrument(skip_all)]
-    pub async fn initialize(
-        config: &Config,
-        cancellation_token: CancellationToken,
-    ) -> Result<Self> {
-        LazyLock::force(&metrics::DESCRIPTIONS);
-        let app_start_instant = Instant::now();
-        let constants = config.constants();
-
-        if config.max_loss_percent() > 100 {
-            bail!(
-                "invalid config value for max loss percent ({}), must be in range [0, 100]",
-                config.max_loss_percent()
-            );
-        }
-
-        let signer = initialization::connect_signer(config.signer()).await?;
-        let wallet = EthereumWallet::from(signer.clone());
-
-        let (host_provider, ru_provider, tx_cache) = select! {
-            biased;
-            _ = cancellation_token.cancelled() => {
-                debug!("cancelling initialization");
-                bail!("initialization cancelled");
-            }
-            result = async {
-                try_join!(
-                    initialization::connect_to_host_provider(config.host_rpc(), wallet.clone()),
-                    initialization::connect_to_rollup_provider(config.ru_rpc(), wallet),
-                    initialization::connect_to_tx_cache(constants.environment().transaction_cache())
-                )
-            } => result.wrap_err("initialization failure")?,
-        };
-
+    pub fn new(context: &FillerContext) -> Result<Self> {
         let submitter = FeePolicySubmitter::new(
-            ru_provider,
-            host_provider,
-            tx_cache.clone(),
-            constants.system().clone(),
+            context.ru_provider().clone(),
+            context.host_provider().clone(),
+            context.tx_cache().clone(),
+            context.constants().system().clone(),
         );
 
         // FillerOptions has two optional fields:
@@ -106,34 +67,29 @@ impl FillerTask {
         //   for multiple consecutive blocks (useful for multi-block bundle submission, not yet
         //   implemented).
         let filler = Filler::new(
-            signer,
-            tx_cache,
+            context.signer().clone(),
+            context.tx_cache().clone(),
             submitter,
-            constants.system().clone(),
+            context.constants().system().clone(),
             FillerOptions::new(),
         );
 
         let pricing_client = FixedPricingClient::new(
-            constants.system(),
-            config.chain_name(),
-            config.max_loss_percent(),
+            context.constants().system(),
+            context.chain_name(),
+            context.max_loss_percent(),
         );
-        let filled_orders = Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE));
-
-        let block_lead_duration = config.block_lead_duration();
-        let host = constants.system().host();
-        let slot_duration = host.slot_duration();
-        let host_start_timestamp = host.start_timestamp();
 
         Ok(Self {
             filler,
             pricing_client,
-            filled_orders,
-            block_lead_duration,
-            slot_duration,
-            host_start_timestamp,
-            app_start_instant,
-            cancellation_token,
+            allowance_cache: context.allowance_cache().clone(),
+            filled_orders: Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE)),
+            block_lead_duration: context.block_lead_duration(),
+            slot_duration: context.constants().system().host().slot_duration(),
+            host_start_timestamp: context.constants().system().host().start_timestamp(),
+            app_start_instant: context.app_start_instant(),
+            cancellation_token: context.cancellation_token().clone(),
         })
     }
 
@@ -199,20 +155,38 @@ impl FillerTask {
         }
     }
 
-    #[instrument(parent = None, skip(self))]
+    #[instrument(skip(self))]
     async fn process_orders(&self) -> Result<()> {
-        let cycle_start = Instant::now();
+        let _cycle_guard = metrics::CycleGuard::new();
+
+        let scored = self.fetch_and_score_orders().await?;
+        if scored.is_empty() {
+            return Ok(());
+        }
+
+        let orders_to_fill = self.select_fillable_orders(scored).await;
+        if orders_to_fill.is_empty() {
+            info!("no fillable orders after budget and nonce checks");
+            return Ok(());
+        }
+
+        self.submit_bundle(orders_to_fill).await;
+        Ok(())
+    }
+
+    /// Fetches orders from the tx cache, filters out known-filled orders, scores by profitability,
+    /// and returns candidates sorted most-profitable-first.
+    #[instrument(skip_all)]
+    async fn fetch_and_score_orders(&self) -> Result<Vec<(i128, SignedOrder)>> {
         let mut orders_count = 0_u64;
 
-        // Stream: skip filled orders (LRU cache), then check acceptable loss threshold.
-        let candidates: Vec<SignedOrder> = self
+        let orders: Vec<SignedOrder> = self
             .filler
             .get_orders()
             .inspect_ok(|_| {
                 orders_count += 1;
             })
             .try_filter_map(|order| self.not_in_filled_cache(order))
-            .try_filter_map(|order| async { self.acceptable(order) })
             .try_collect()
             .await
             .inspect_err(|_| metrics::record_fetch_order_error())
@@ -220,33 +194,95 @@ impl FillerTask {
 
         metrics::record_orders_fetched(orders_count);
 
-        if candidates.is_empty() {
+        if orders.is_empty() {
             if orders_count == 0 {
                 info!("no orders fetched from transaction cache");
             } else {
-                info!(orders_count, "no acceptable, unfilled orders found");
+                info!(orders_count, "all orders already filled (cached)");
             }
-            metrics::record_cycle();
-            metrics::record_cycle_duration(cycle_start.elapsed());
-            return Ok(());
+            return Ok(Vec::new());
         }
 
-        // Check Permit2 nonces concurrently for all profitable candidates.
-        let candidates_len = candidates.len();
-        let orders_to_fill: Vec<SignedOrder> =
-            join_all(candidates.into_iter().map(|order| self.unfilled(order)))
-                .await
-                .into_iter()
-                .flatten()
-                .collect();
+        let mut scored: Vec<(i128, SignedOrder)> = orders
+            .into_iter()
+            .filter_map(|order| match self.pricing_client.profitability(&order) {
+                Ok(Some(margin)) => Some((margin, order)),
+                Ok(None) => {
+                    trace!(order_hash = %order.order_hash(), "order exceeds max loss threshold");
+                    metrics::record_order_skipped(metrics::OrderSkippedReason::ExceedsMaxLoss);
+                    None
+                }
+                Err(FixedPricingError::UnknownToken(token)) => {
+                    warn!(order_hash = %order.order_hash(), %token, "unknown token, skipping");
+                    metrics::record_order_skipped(metrics::OrderSkippedReason::UnknownToken);
+                    None
+                }
+                Err(error) => {
+                    warn!(order_hash = %order.order_hash(), %error, "profitability check failed");
+                    metrics::record_pricing_error();
+                    None
+                }
+            })
+            .collect();
 
-        if orders_to_fill.is_empty() {
-            info!(orders_count, candidates_len, "no unfilled orders after nonce check");
-            metrics::record_cycle();
-            metrics::record_cycle_duration(cycle_start.elapsed());
-            return Ok(());
+        if scored.is_empty() {
+            info!(orders_count, "no profitable orders");
+            return Ok(Vec::new());
         }
 
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok(scored)
+    }
+
+    /// Builds a per-cycle budget map and checks Permit2 nonces, then selects orders that pass both
+    /// budget and nonce checks in profitability order.
+    #[instrument(skip_all, fields(scored_len = scored.len()))]
+    async fn select_fillable_orders(&self, scored: Vec<(i128, SignedOrder)>) -> Vec<SignedOrder> {
+        let (mut working_map, filled_hashes) = tokio::join!(
+            WorkingMap::build(
+                &scored,
+                self.filler.signer().address(),
+                self.filler.submitter().ru_provider(),
+                self.filler.submitter().host_provider(),
+                self.filler.constants(),
+                &self.allowance_cache,
+            ),
+            async {
+                join_all(scored.iter().map(|(_margin, order)| self.check_filled(order)))
+                    .await
+                    .into_iter()
+                    .flatten()
+                    .collect::<HashSet<B256>>()
+            },
+        );
+
+        let mut orders_to_fill = Vec::new();
+        for (_margin, order) in scored {
+            if filled_hashes.contains(order.order_hash()) {
+                continue;
+            }
+
+            if !working_map.can_fill(&order) {
+                trace!(
+                    order_hash = %order.order_hash(),
+                    "insufficient filler balance or allowance, skipping"
+                );
+                metrics::record_order_skipped(
+                    metrics::OrderSkippedReason::InsufficientFillerBalance,
+                );
+                continue;
+            }
+
+            working_map.accept_order(&order);
+            orders_to_fill.push(order);
+        }
+
+        orders_to_fill
+    }
+
+    /// Submits a fill bundle and records metrics.
+    #[instrument(skip_all, fields(orders_in_bundle = orders_to_fill.len()))]
+    async fn submit_bundle(&self, orders_to_fill: Vec<SignedOrder>) {
         let orders_in_bundle = orders_to_fill.len();
         match self.filler.fill(orders_to_fill, 1).await {
             Ok(responses) => {
@@ -264,15 +300,11 @@ impl FillerTask {
                 metrics::record_bundle(metrics::SubmissionResult::Failure);
             }
         }
-
-        metrics::record_cycle();
-        metrics::record_cycle_duration(cycle_start.elapsed());
-        Ok(())
     }
 
     /// Returns an [`Instant`] corresponding to the very first submission anchor:
     /// `host_start_timestamp - block_lead_duration`. This will typically be far in the past, but
-    /// that's intentional — [`tokio::time::interval_at`] with [`MissedTickBehavior::Skip`]
+    /// that's intentional - [`tokio::time::interval_at`] with [`MissedTickBehavior::Skip`]
     /// fast-forwards over all elapsed ticks and fires at the next one that falls in the future.
     fn submission_anchor_instant(&self) -> Instant {
         let anchor =
@@ -285,7 +317,7 @@ impl FillerTask {
     }
 
     /// Returns `Ok(Some(order))` if the order is not held in our local cache of known filled
-    /// orders, or `Ok(None)` if not.
+    /// orders, or `Ok(None)` if it is.
     ///
     /// Never returns `Err`, but this signature suits usage in `try_filter_map`.
     async fn not_in_filled_cache(
@@ -302,49 +334,12 @@ impl FillerTask {
         }
     }
 
-    /// Returns `Ok(Some(order))` if the order is within the acceptable loss threshold,
-    /// otherwise `Ok(None)`.
-    ///
-    /// Never returns `Err`, but this signature suits usage in `try_filter_map`.
-    fn acceptable(&self, order: SignedOrder) -> Result<Option<SignedOrder>, FillerError> {
-        match self.pricing_client.is_acceptable(&order) {
-            Ok(true) => {
-                trace!(order_hash = %order.order_hash(), "order is within acceptable loss threshold");
-                Ok(Some(order))
-            }
-            Ok(false) => {
-                trace!(order_hash = %order.order_hash(), "order exceeds acceptable loss threshold");
-                metrics::record_order_skipped(metrics::OrderSkippedReason::ExceedsMaxLoss);
-                Ok(None)
-            }
-            Err(FixedPricingError::UnknownToken(token)) => {
-                warn!(
-                    order_hash = %order.order_hash(),
-                    %token,
-                    "order contains unknown token, skipping"
-                );
-                metrics::record_order_skipped(metrics::OrderSkippedReason::UnknownToken);
-                Ok(None)
-            }
-            Err(error) => {
-                warn!(
-                    order_hash = %order.order_hash(),
-                    %error,
-                    "failed to check acceptable loss threshold"
-                );
-                metrics::record_pricing_error();
-                Ok(None)
-            }
-        }
-    }
-
-    /// Returns `Some(order)` if its Permit2 nonce has not been consumed on the rollup chain,
-    /// indicating it is still available to fill. Increments `unfilled_count` for each unfilled
-    /// order.
-    async fn unfilled(&self, order: SignedOrder) -> Option<SignedOrder> {
+    /// Checks whether the order's Permit2 nonce has been consumed on the rollup chain. Returns
+    /// `Some(order_hash)` if filled, `None` if unfilled or on RPC error.
+    async fn check_filled(&self, order: &SignedOrder) -> Option<B256> {
         let is_filled = match signet_orders::permit2::is_order_nonce_consumed(
             self.filler.submitter().ru_provider(),
-            &order,
+            order,
         )
         .await
         {
@@ -356,7 +351,7 @@ impl FillerTask {
                     "failed to check Permit2 nonce bitmap, assuming not filled"
                 );
                 metrics::record_nonce_check_error();
-                return Some(order);
+                return None;
             }
         };
 
@@ -364,10 +359,9 @@ impl FillerTask {
             trace!(order_hash = %order.order_hash(), "order already filled");
             self.filled_orders.lock().unwrap().put(*order.order_hash(), ());
             metrics::record_order_skipped(metrics::OrderSkippedReason::AlreadyFilled);
-            None
+            Some(*order.order_hash())
         } else {
-            trace!(order_hash = %order.order_hash(), "order unfilled");
-            Some(order)
+            None
         }
     }
 }
