@@ -2,7 +2,7 @@
 
 **Keep this file and the readme up to date.** After any change to the repo (new files, renamed modules, added dependencies, changed conventions, etc.), update the relevant sections of this document and the README.md before finishing.
 
-Order filler service for the Signet Parmigiana testnet. Monitors a transaction cache for pending orders, checks they are within an acceptable loss threshold using hardcoded exchange rates, and submits fill bundles shortly before each block boundary.
+Order filler service for the Signet Parmigiana testnet. Monitors a transaction cache for pending orders, checks they are within an acceptable loss threshold using hardcoded exchange rates, and submits fill bundles targeting configurable consecutive blocks shortly before each block boundary.
 
 ## Project Structure
 
@@ -46,6 +46,7 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - Provider connections retry indefinitely on transient errors using `backon`
 - The filler loop uses `tokio::time::interval_at` aligned to chain slot boundaries minus `block_lead_duration`
 - Order processing pipeline: fetch -> filled-cache filter -> profitability score/sort -> per-order budget+nonce check -> submit bundle
+- Fill bundles target a configurable number of consecutive blocks (`SIGNET_FILLER_TARGET_BLOCKS`, default 5); the Permit2 deadline offset is derived from `block_lead_duration + target_blocks * slot_duration`, plus a 5s drift buffer
 - Permit2 allowances are cached by a background task (10-min refresh); balances are queried fresh each cycle
 - Per-cycle `WorkingMap` tracks running balance/allowance budgets, decremented as orders are accepted (MAX allowances are not decremented)
 - Graceful shutdown via `CancellationToken` propagated through all async tasks

@@ -51,13 +51,6 @@ impl FillerContext {
         LazyLock::force(&metrics::DESCRIPTIONS);
         ChainTokenPair::init_token_names(config.constants().system());
 
-        if config.max_loss_percent() > 100 {
-            bail!(
-                "invalid config value for max loss percent ({}), must be in range [0, 100]",
-                config.max_loss_percent()
-            );
-        }
-
         let signer = connect_signer(config.signer()).await?;
         let wallet = EthereumWallet::from(signer.clone());
 
@@ -107,6 +100,10 @@ impl FillerContext {
 
     pub(crate) const fn max_loss_percent(&self) -> u8 {
         self.config.max_loss_percent()
+    }
+
+    pub(crate) const fn target_blocks(&self) -> u8 {
+        self.config.target_blocks()
     }
 
     pub(crate) const fn cancellation_token(&self) -> &CancellationToken {

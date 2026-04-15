@@ -1,5 +1,5 @@
 use alloy::rpc::client::BuiltInConnectionString;
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, bail};
 use init4_bin_base::utils::{
     from_env::FromEnv,
     provider::{ProviderConfig, PubSubConfig},
@@ -12,6 +12,8 @@ use std::time::Duration;
 const CHAIN_NAME_VAR: &str = "SIGNET_FILLER_CHAIN_NAME";
 const HOST_RPC_VAR: &str = "SIGNET_FILLER_HOST_RPC_URL";
 const RU_RPC_VAR: &str = "SIGNET_FILLER_ROLLUP_RPC_URL";
+const MAX_LOSS_PERCENT_VAR: &str = "SIGNET_FILLER_MAX_LOSS_PERCENT";
+const TARGET_BLOCKS_VAR: &str = "SIGNET_FILLER_TARGET_BLOCKS";
 
 const DEFAULT_CHAIN_NAME: &str = "parmigiana";
 const DEFAULT_HOST_RPC: &str = "https://host-rpc.parmigiana.signet.sh";
@@ -19,6 +21,10 @@ const DEFAULT_RU_RPC: &str = "wss://rpc.parmigiana.signet.sh";
 const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_secs(2);
 const DEFAULT_MAX_LOSS_PERCENT: u8 = 10;
 const DEFAULT_HEALTHCHECK_PORT: u16 = 8080;
+const DEFAULT_TARGET_BLOCKS: u8 = 5;
+/// Caps `target_blocks` to avoid wasting resources on redundant inclusion attempts once a bundle
+/// has either landed or become clearly stale.
+const MAX_TARGET_BLOCKS: u8 = 10;
 
 /// Internal configuration loaded directly from environment variables.
 #[derive(Debug, FromEnv)]
@@ -68,6 +74,13 @@ struct ConfigInner {
     )]
     healthcheck_port: Option<u16>,
 
+    #[from_env(
+        var = "SIGNET_FILLER_TARGET_BLOCKS",
+        desc = "Number of consecutive blocks to target per fill bundle, 1-10 [default: 5]",
+        optional
+    )]
+    target_blocks: Option<u8>,
+
     signer: LocalOrAwsConfig,
 }
 
@@ -83,6 +96,7 @@ pub struct Config {
     block_lead_duration: Duration,
     max_loss_percent: u8,
     healthcheck_port: u16,
+    target_blocks: u8,
     signer: LocalOrAwsConfig,
     constants: SignetConstants,
 }
@@ -118,6 +132,11 @@ impl Config {
         self.healthcheck_port
     }
 
+    /// Number of consecutive blocks to target per fill bundle.
+    pub const fn target_blocks(&self) -> u8 {
+        self.target_blocks
+    }
+
     /// Signer configuration for transaction signing.
     pub const fn signer(&self) -> &LocalOrAwsConfig {
         &self.signer
@@ -136,6 +155,7 @@ impl Config {
             block_lead_duration_ms,
             max_loss_percent,
             healthcheck_port,
+            target_blocks,
             signer,
         } = ConfigInner::from_env()?;
         let chain_name = chain_name.unwrap_or(DEFAULT_CHAIN_NAME.to_string());
@@ -159,7 +179,20 @@ impl Config {
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_BLOCK_LEAD_DURATION);
         let max_loss_percent = max_loss_percent.unwrap_or(DEFAULT_MAX_LOSS_PERCENT);
+        if max_loss_percent > 100 {
+            bail!(
+                "{MAX_LOSS_PERCENT_VAR} must be between 0 and 100 inclusive \
+                 (got {max_loss_percent})"
+            );
+        }
         let healthcheck_port = healthcheck_port.unwrap_or(DEFAULT_HEALTHCHECK_PORT);
+        let target_blocks = target_blocks.unwrap_or(DEFAULT_TARGET_BLOCKS);
+        if !(1..=MAX_TARGET_BLOCKS).contains(&target_blocks) {
+            bail!(
+                "{TARGET_BLOCKS_VAR} must be between 1 and {MAX_TARGET_BLOCKS} inclusive \
+                 (got {target_blocks})"
+            );
+        }
 
         Ok(Config {
             chain_name,
@@ -168,6 +201,7 @@ impl Config {
             block_lead_duration,
             max_loss_percent,
             healthcheck_port,
+            target_blocks,
             signer,
             constants,
         })

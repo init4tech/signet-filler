@@ -23,6 +23,7 @@ signet-filler --help
 | `SIGNET_FILLER_MIN_PROFIT_THRESHOLD_WEI` | Minimum profit threshold in wei | `100` |
 | `SIGNET_FILLER_GAS_ESTIMATE_PER_ORDER` | Estimated gas per order fill | `150000` |
 | `SIGNET_FILLER_GAS_PRICE_GWEI` | Assumed gas price in gwei | `1` |
+| `SIGNET_FILLER_TARGET_BLOCKS` | Number of consecutive blocks to target per fill bundle (1-10) | `5` |
 | `SIGNET_FILLER_HEALTHCHECK_PORT` | Port for the healthcheck HTTP server | `8080` |
 | `SIGNER_KEY` | AWS KMS key ID or local private key | N/A |
 | `SIGNER_CHAIN_ID` | Chain ID for AWS signer [optional] | N/A |
@@ -34,12 +35,6 @@ signet-filler --help
 The current implementation uses hardcoded USD exchange rates and decimal counts for a set of known tokens (USDC, USDT, WETH, WBTC, and the native/wrapped rollup token). Orders referencing any other token will be rejected with an `UnknownToken` error.
 
 A future improvement could handle unknown tokens by querying the ERC-20 contract on-chain for `decimals()` and `totalSupply()`, then assuming total supply represents a fixed USD value (e.g. $10k) to derive a token price. This would allow the filler to process orders for arbitrary tokens rather than only the hardcoded set.
-
-### Single-Block Bundle Submission
-
-Fill bundles currently target only the next block (N+1). If the bundle is not included in that block, it expires and the filler must wait for the next polling cycle to retry with fresh signatures.
-
-A more reliable approach would be to submit bundles targeting multiple consecutive blocks (N+1, N+2, N+3) simultaneously, reusing the same signed fills. This would improve inclusion rates without additional signing overhead.
 
 ## Future Development
 

@@ -29,6 +29,9 @@ mod preflight;
 use preflight::WorkingMap;
 
 const FILLED_ORDERS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10240).unwrap();
+/// Safety margin added to the Permit2 deadline to cover signing/network latency and clock drift
+/// between the filler and the host chain.
+const DEADLINE_DRIFT_BUFFER_SECS: u64 = 5;
 
 type Filler = signet_orders::Filler<
     LocalOrAws,
@@ -43,6 +46,7 @@ pub struct FillerTask {
     pricing_client: FixedPricingClient,
     allowance_cache: AllowanceCache,
     filled_orders: Mutex<LruCache<B256, ()>>,
+    target_blocks: u8,
     block_lead_duration: Duration,
     slot_duration: u64,
     host_start_timestamp: u64,
@@ -60,19 +64,21 @@ impl FillerTask {
             context.constants().system().clone(),
         );
 
-        // FillerOptions has two optional fields:
-        // - `nonce`: Permit2 nonce for fill signatures. When None (default), a fresh nonce is
-        //   generated from the current timestamp in microseconds for each fill.
-        // - `deadline_offset`: Seconds from now until the Permit2 signature expires. When `None`,
-        //   defaults to 12 seconds. A longer offset allows the same signed fill to be resubmitted
-        //   for multiple consecutive blocks (useful for multi-block bundle submission, not yet
-        //   implemented).
+        let target_blocks = context.target_blocks();
+        let slot_duration = context.constants().system().host().slot_duration();
+        let block_lead_duration = context.block_lead_duration();
+        // Keep the Permit2 signature valid from signing time (`block_lead_duration` before block N)
+        // through the end of block N+target_blocks-1, with an extra buffer for signing/network
+        // latency and clock drift.
+        let deadline_offset = block_lead_duration.as_secs()
+            + u64::from(target_blocks) * slot_duration
+            + DEADLINE_DRIFT_BUFFER_SECS;
         let filler = Filler::new(
             context.signer().clone(),
             context.tx_cache().clone(),
             submitter,
             context.constants().system().clone(),
-            FillerOptions::new(),
+            FillerOptions::new().with_deadline_offset(deadline_offset),
         );
 
         let pricing_client = FixedPricingClient::new(
@@ -86,8 +92,9 @@ impl FillerTask {
             pricing_client,
             allowance_cache: context.allowance_cache().clone(),
             filled_orders: Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE)),
-            block_lead_duration: context.block_lead_duration(),
-            slot_duration: context.constants().system().host().slot_duration(),
+            target_blocks,
+            block_lead_duration,
+            slot_duration,
             host_start_timestamp: context.constants().system().host().start_timestamp(),
             app_start_instant: context.app_start_instant(),
             cancellation_token: context.cancellation_token().clone(),
@@ -118,6 +125,7 @@ impl FillerTask {
         info!(
             slot_duration_secs = self.slot_duration,
             block_lead_duration_ms = %self.block_lead_duration.as_millis(),
+            target_blocks_count = self.target_blocks,
             "starting filler task"
         );
 
@@ -285,7 +293,7 @@ impl FillerTask {
     #[instrument(skip_all, fields(orders_in_bundle = orders_to_fill.len()))]
     async fn submit_bundle(&self, orders_to_fill: Vec<SignedOrder>) {
         let orders_in_bundle = orders_to_fill.len();
-        match self.filler.fill(orders_to_fill, 1).await {
+        match self.filler.fill(orders_to_fill, self.target_blocks).await {
             Ok(responses) => {
                 info!(
                     bundle_ids = ?responses.iter().map(|response| response.id).collect::<Vec<_>>(),
