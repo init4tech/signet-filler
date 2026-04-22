@@ -47,7 +47,7 @@ async fn main() -> eyre::Result<()> {
         Err(error) => return Err(error),
     };
 
-    let filler_task = FillerTask::new(&context)?;
+    let filler_task = FillerTask::new(&context);
     let allowance_task = AllowanceRefreshTask::initialize(&context).await;
     let healthcheck_port = context.healthcheck_port();
 

@@ -46,6 +46,17 @@ impl TokenBudget {
 /// orders are accepted into a bundle.
 ///
 /// Built fresh each cycle from on-chain balance queries and cached Permit2 allowances.
+///
+/// # Fail-open policy
+///
+/// When a balance query fails or an allowance is missing from the cache, the pre-flight check is
+/// **deliberately permissive** and allows affected orders through. This trades strict pre-flight
+/// safety for liveness: a flaky RPC or a stale cache will not stop the filler from submitting
+/// fills, and any loss from an unfillable order slipping through is bounded by the
+/// `max_loss_percent` backstop in the pricing client.
+///
+/// A production-ready filler would typically do the opposite and fail closed on missing data,
+/// distinguishing "token not tracked" from "query failed" and only allowing the former through.
 #[derive(Debug)]
 pub(super) struct WorkingMap {
     inner: HashMap<ChainTokenPair, TokenBudget>,
@@ -137,6 +148,10 @@ impl WorkingMap {
         );
         totals.iter().all(|(key, &total)| match self.inner.get(key) {
             Some(budget) => budget.can_cover(total),
+            // Fail-open: no entry either means the token is on an unknown chain (already filtered
+            // upstream) or that its balance query failed this cycle. Either way, let the order
+            // through and rely on the pricing client's `max_loss_percent` to bound losses. A
+            // production-ready filler would fail closed on query failures - see `WorkingMap` docs.
             None => {
                 warn!(%key, %total, "no budget entry for token, allowing order through");
                 true
@@ -311,12 +326,12 @@ mod tests {
         assert!(map.can_fill(&order));
     }
 
-    /// When a balance query fails during `WorkingMap::build`, the token is dropped from the map.
-    /// An order requiring that token then passes `can_fill` because the missing-entry path returns
-    /// `true`. This test documents that behavior - a partial RPC failure silently disables the
-    /// budget check for the affected token.
+    /// When a balance query fails during `WorkingMap::build`, the token is dropped from the map
+    /// and `can_fill` allows the order through. This is the deliberate fail-open policy documented
+    /// on `WorkingMap`: liveness is preferred over strict pre-flight safety, with losses bounded
+    /// by the pricing client's `max_loss_percent`.
     #[test]
-    fn can_fill_missing_budget_from_failed_query_allows_order_through() {
+    fn can_fill_missing_budget_from_failed_query_is_intentionally_fail_open() {
         let pair_x = ChainTokenPair::new(CHAIN_A, TOKEN_X);
         let map = WorkingMap::from_entries([(pair_x, U256::from(1000), U256::from(1000))]);
 

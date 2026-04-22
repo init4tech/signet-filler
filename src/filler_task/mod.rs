@@ -13,6 +13,7 @@ use signet_orders::{FeePolicySubmitter, FillerError, FillerOptions};
 use signet_tx_cache::TxCache;
 use signet_types::SignedOrder;
 use std::{
+    cmp::Reverse,
     collections::HashSet,
     num::NonZeroUsize,
     sync::Mutex,
@@ -51,7 +52,7 @@ pub struct FillerTask {
 
 impl FillerTask {
     /// Create a new filler from configuration.
-    pub fn new(context: &FillerContext) -> Result<Self> {
+    pub fn new(context: &FillerContext) -> Self {
         let submitter = FeePolicySubmitter::new(
             context.ru_provider().clone(),
             context.host_provider().clone(),
@@ -80,7 +81,7 @@ impl FillerTask {
             context.max_loss_percent(),
         );
 
-        Ok(Self {
+        Self {
             filler,
             pricing_client,
             allowance_cache: context.allowance_cache().clone(),
@@ -90,7 +91,7 @@ impl FillerTask {
             host_start_timestamp: context.constants().system().host().start_timestamp(),
             app_start_instant: context.app_start_instant(),
             cancellation_token: context.cancellation_token().clone(),
-        })
+        }
     }
 
     /// Run the filler task to completion.
@@ -230,7 +231,7 @@ impl FillerTask {
             return Ok(Vec::new());
         }
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|entry| Reverse(entry.0));
         Ok(scored)
     }
 
