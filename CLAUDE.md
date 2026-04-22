@@ -45,7 +45,7 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - `Config` exposes only getter methods; construction is internal via `config_from_env()`
 - Provider connections retry indefinitely on transient errors using `backon`
 - The filler loop uses `tokio::time::interval_at` aligned to chain slot boundaries minus `block_lead_duration`
-- Order processing pipeline: fetch -> filled-cache filter -> profitability score/sort -> per-order budget+nonce check -> submit bundle
+- Order processing pipeline: fetch -> filled-cache filter -> expired-deadline filter -> profitability score/sort -> per-order budget+nonce check -> submit bundle
 - Fill bundles target a configurable number of consecutive blocks (`SIGNET_FILLER_TARGET_BLOCKS`, default 5); the Permit2 deadline offset is derived from `block_lead_duration + target_blocks * slot_duration`, plus a 5s drift buffer
 - Permit2 allowances are cached by a background task (10-min refresh); balances are queried fresh each cycle
 - Per-cycle `WorkingMap` tracks running balance/allowance budgets, decremented as orders are accepted (MAX allowances are not decremented)

@@ -11,7 +11,7 @@ use init4_bin_base::{
 use lru::LruCache;
 use signet_orders::{FeePolicySubmitter, FillerError, FillerOptions};
 use signet_tx_cache::TxCache;
-use signet_types::SignedOrder;
+use signet_types::{SignedOrder, SignedPermitError};
 use std::{
     cmp::Reverse,
     collections::HashSet,
@@ -188,13 +188,23 @@ impl FillerTask {
     #[instrument(skip_all)]
     async fn fetch_and_score_orders(&self) -> Result<Vec<(i128, SignedOrder)>> {
         let mut orders_count = 0_u64;
+        let mut orders_after_expiry_filter = 0_u64;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock set before UNIX epoch")
+            .as_secs();
+        // Subtract the drift buffer for symmetry with the sign-side deadline, so an order whose
+        // deadline is within the buffer of the first target block isn't prematurely dropped here
+        // while the sign path would still have accepted it.
+        let earliest_fill_timestamp =
+            (now + self.block_lead_duration.as_secs()).saturating_sub(DEADLINE_DRIFT_BUFFER_SECS);
 
         let orders: Vec<SignedOrder> = self
             .filler
             .get_orders()
-            .inspect_ok(|_| {
-                orders_count += 1;
-            })
+            .inspect_ok(|_| orders_count += 1)
+            .try_filter_map(|order| not_expired(order, earliest_fill_timestamp))
+            .inspect_ok(|_| orders_after_expiry_filter += 1)
             .try_filter_map(|order| self.not_in_filled_cache(order))
             .try_collect()
             .await
@@ -207,7 +217,12 @@ impl FillerTask {
             if orders_count == 0 {
                 info!("no orders fetched from transaction cache");
             } else {
-                info!(orders_count, "all orders already filled (cached)");
+                info!(
+                    orders_count,
+                    expired = orders_count - orders_after_expiry_filter,
+                    already_filled = orders_after_expiry_filter,
+                    "all fetched orders filtered out"
+                );
             }
             return Ok(Vec::new());
         }
@@ -372,5 +387,96 @@ impl FillerTask {
         } else {
             None
         }
+    }
+}
+
+/// Returns `Ok(Some(order))` if the order's Permit2 deadline allows it to land in at least the
+/// first target block of this cycle, or `Ok(None)` if it cannot. `earliest_fill_timestamp`
+/// should be `now + block_lead_duration - DEADLINE_DRIFT_BUFFER_SECS`: an order whose deadline
+/// is before that timestamp cannot be satisfied by any block in the target window, so filtering
+/// here avoids wasted RPC calls during the nonce check and submission attempts that would revert
+/// on-chain anyway. The drift buffer keeps the filter symmetric with the sign-side deadline so
+/// we don't drop orders the sign path would still have accepted.
+///
+/// Never returns `Err`, but this signature suits usage in `try_filter_map`.
+async fn not_expired(
+    order: SignedOrder,
+    earliest_fill_timestamp: u64,
+) -> Result<Option<SignedOrder>, FillerError> {
+    match order.validate(earliest_fill_timestamp) {
+        Ok(()) => Ok(Some(order)),
+        Err(SignedPermitError::DeadlinePassed { current, deadline }) => {
+            trace!(
+                order_hash = %order.order_hash(),
+                deadline,
+                earliest_fill_timestamp = current,
+                "skipping expired order"
+            );
+            metrics::record_order_skipped(metrics::OrderSkippedReason::Expired);
+            Ok(None)
+        }
+        Err(error) => {
+            error!(
+                order_hash = %order.order_hash(),
+                %error,
+                "unexpected error from SignedOrder::validate; letting order through unchecked"
+            );
+            Ok(Some(order))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy::primitives::{Address, Bytes, U256};
+    use signet_zenith::RollupOrders::{Permit2Batch, PermitBatchTransferFrom, TokenPermissions};
+
+    fn order_with_deadline(deadline: u64) -> SignedOrder {
+        SignedOrder::new(
+            Permit2Batch {
+                permit: PermitBatchTransferFrom {
+                    permitted: vec![TokenPermissions {
+                        token: Address::ZERO,
+                        amount: U256::from(1u64),
+                    }],
+                    nonce: U256::ZERO,
+                    deadline: U256::from(deadline),
+                },
+                owner: Address::ZERO,
+                signature: Bytes::from([0; 65]),
+            },
+            vec![],
+        )
+    }
+
+    #[tokio::test]
+    async fn keeps_order_with_future_deadline() {
+        let order = order_with_deadline(2_000);
+        let kept = not_expired(order, 1_000).await.expect("not_expired never errors");
+        kept.expect("order with future deadline should be kept");
+    }
+
+    #[tokio::test]
+    async fn drops_order_with_past_deadline() {
+        let order = order_with_deadline(500);
+        let kept = not_expired(order, 1_000).await.expect("not_expired never errors");
+        assert!(kept.is_none(), "order with past deadline should be dropped");
+    }
+
+    // `SignedOrder::validate()` uses strict `>`, so a deadline equal to the fill timestamp is
+    // still valid.
+    #[tokio::test]
+    async fn keeps_order_with_deadline_equal_to_earliest_fill() {
+        let order = order_with_deadline(1_000);
+        let kept = not_expired(order, 1_000).await.expect("not_expired never errors");
+        kept.expect("order with deadline equal to earliest fill timestamp should be kept");
+    }
+
+    #[tokio::test]
+    async fn drops_order_with_deadline_one_second_before_earliest_fill() {
+        let order = order_with_deadline(999);
+        let kept = not_expired(order, 1_000).await.expect("not_expired never errors");
+        assert!(kept.is_none(), "order with deadline one second in the past should be dropped");
     }
 }
