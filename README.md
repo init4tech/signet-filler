@@ -2,7 +2,7 @@
 
 A filler service for the Signet network that monitors pending orders and fills profitable ones.
 
-The filler checks the transaction cache for pending orders shortly before each block boundary, evaluates their profitability, and submits fill bundles for orders that meet the configured profit threshold. Orders whose Permit2 deadline is earlier than the first target block's timestamp (minus a 5-second drift buffer for symmetry with the sign-side deadline offset) are dropped up front to avoid wasted RPC calls, and before checking nonces the remainder are filtered against the filler wallet's token balances and Permit2 allowances so that orders the filler cannot cover are discarded early. It connects to both the host chain and rollup RPC endpoints, using a configurable signer for transaction signing.
+The filler checks the transaction cache for pending orders shortly before each block boundary, scores their profitability against hardcoded exchange rates, and submits fill bundles for orders within the configured maximum loss threshold. Orders whose Permit2 deadline is earlier than the first target block's timestamp (minus a 5-second drift buffer for symmetry with the sign-side deadline offset) are dropped up front to avoid wasted RPC calls, and before checking nonces the remainder are filtered against the filler wallet's token balances and Permit2 allowances so that orders the filler cannot cover are discarded early. It connects to both the host chain and rollup RPC endpoints, using a configurable signer for transaction signing.
 
 ## Configuration
 
@@ -20,10 +20,9 @@ signet-filler --help
 | `SIGNET_FILLER_HOST_RPC_URL` | URL for Host RPC node (http/https/ws/wss) | `https://host-rpc.parmigiana.signet.sh` |
 | `SIGNET_FILLER_ROLLUP_RPC_URL` | URL for Rollup RPC node (ws/wss only) | `wss://rpc.parmigiana.signet.sh` |
 | `SIGNET_FILLER_BLOCK_LEAD_DURATION_MS` | How far before each block boundary to submit fill bundles, in milliseconds | `2000` |
-| `SIGNET_FILLER_MIN_PROFIT_THRESHOLD_WEI` | Minimum profit threshold in wei | `100` |
-| `SIGNET_FILLER_GAS_ESTIMATE_PER_ORDER` | Estimated gas per order fill | `150000` |
-| `SIGNET_FILLER_GAS_PRICE_GWEI` | Assumed gas price in gwei | `1` |
+| `SIGNET_FILLER_MAX_LOSS_PERCENT` | Maximum acceptable loss percent for order pricing (0-100) | `10` |
 | `SIGNET_FILLER_TARGET_BLOCKS` | Number of consecutive blocks to target per fill bundle (1-10) | `5` |
+| `SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE` | Maximum orders per fill bundle. When set, orders in excess of the cap are split across additional bundles submitted sequentially in profitability order (must be > 0) | unset (no cap) |
 | `SIGNET_FILLER_HEALTHCHECK_PORT` | Port for the healthcheck HTTP server | `8080` |
 | `SIGNER_KEY` | AWS KMS key ID or local private key | N/A |
 | `SIGNER_CHAIN_ID` | Chain ID for AWS signer [optional] | N/A |

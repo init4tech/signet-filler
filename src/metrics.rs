@@ -18,6 +18,7 @@ const PREFLIGHT_QUERY_ERRORS: &str = "signet.filler.preflight_query_errors";
 const MISSED_WINDOWS: &str = "signet.filler.missed_windows";
 const CYCLE_DURATION_SECONDS: &str = "signet.filler.cycle_duration_seconds";
 const ORDERS_PER_BUNDLE: &str = "signet.filler.orders_per_bundle";
+const CHUNKS_PER_CYCLE: &str = "signet.filler.chunks_per_cycle";
 
 /// Force evaluation to register all metric descriptions with the exporter.
 pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
@@ -29,7 +30,11 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
         "Orders skipped (label: reason = already-filled / expired / exceeds-max-loss / \
         unknown-token / insufficient-filler-balance)"
     );
-    describe_counter!(ORDERS_IN_BUNDLES, "Orders included in submitted fill bundles");
+    describe_counter!(
+        ORDERS_IN_BUNDLES,
+        "Orders included in fill bundles submitted to the filler (counts attempts regardless of \
+        submission outcome; pair with BUNDLES result=failure to gauge lost volume)"
+    );
     describe_counter!(BUNDLES, "Bundle submissions (label: result = success / failure)");
     describe_counter!(NONCE_CHECK_ERRORS, "Errors querying Permit2 nonce bitmap");
     describe_counter!(PRICING_ERRORS, "Errors during profitability evaluation");
@@ -49,6 +54,11 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
     );
     describe_histogram!(CYCLE_DURATION_SECONDS, "Duration of each processing cycle");
     describe_histogram!(ORDERS_PER_BUNDLE, "Orders in submitted bundles");
+    describe_histogram!(
+        CHUNKS_PER_CYCLE,
+        "Number of fill bundle chunks submitted per cycle (1 when orders fit in a single bundle, \
+        more when MAX_ORDERS_PER_BUNDLE forces chunking)"
+    );
 });
 
 pub(crate) enum OrderSkippedReason {
@@ -193,4 +203,9 @@ pub(crate) fn record_missed_window() {
 /// Record the number of orders in a submitted bundle.
 pub(crate) fn record_orders_per_bundle(count: f64) {
     histogram!(ORDERS_PER_BUNDLE).record(count);
+}
+
+/// Record the number of fill bundles submitted during a cycle.
+pub(crate) fn record_chunks_per_cycle(count: f64) {
+    histogram!(CHUNKS_PER_CYCLE).record(count);
 }

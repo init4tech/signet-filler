@@ -7,13 +7,14 @@ use init4_bin_base::utils::{
 };
 use itertools::Itertools;
 use signet_constants::SignetConstants;
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 const CHAIN_NAME_VAR: &str = "SIGNET_FILLER_CHAIN_NAME";
 const HOST_RPC_VAR: &str = "SIGNET_FILLER_HOST_RPC_URL";
 const RU_RPC_VAR: &str = "SIGNET_FILLER_ROLLUP_RPC_URL";
 const MAX_LOSS_PERCENT_VAR: &str = "SIGNET_FILLER_MAX_LOSS_PERCENT";
 const TARGET_BLOCKS_VAR: &str = "SIGNET_FILLER_TARGET_BLOCKS";
+const MAX_ORDERS_PER_BUNDLE_VAR: &str = "SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE";
 
 const DEFAULT_CHAIN_NAME: &str = "parmigiana";
 const DEFAULT_HOST_RPC: &str = "https://host-rpc.parmigiana.signet.sh";
@@ -81,6 +82,14 @@ struct ConfigInner {
     )]
     target_blocks: Option<u8>,
 
+    #[from_env(
+        var = "SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE",
+        desc = "Maximum number of orders to include in a single fill bundle. Must be greater \
+            than 0 when set [default: unset, no cap]",
+        optional
+    )]
+    max_orders_per_bundle: Option<usize>,
+
     signer: LocalOrAwsConfig,
 }
 
@@ -97,6 +106,7 @@ pub struct Config {
     max_loss_percent: u8,
     healthcheck_port: u16,
     target_blocks: u8,
+    max_orders_per_bundle: Option<NonZeroUsize>,
     signer: LocalOrAwsConfig,
     constants: SignetConstants,
 }
@@ -137,6 +147,11 @@ impl Config {
         self.target_blocks
     }
 
+    /// Maximum number of orders to include in a single fill bundle, or `None` for no cap.
+    pub const fn max_orders_per_bundle(&self) -> Option<NonZeroUsize> {
+        self.max_orders_per_bundle
+    }
+
     /// Signer configuration for transaction signing.
     pub const fn signer(&self) -> &LocalOrAwsConfig {
         &self.signer
@@ -156,6 +171,7 @@ impl Config {
             max_loss_percent,
             healthcheck_port,
             target_blocks,
+            max_orders_per_bundle,
             signer,
         } = ConfigInner::from_env()?;
         let chain_name = chain_name.unwrap_or(DEFAULT_CHAIN_NAME.to_string());
@@ -193,6 +209,11 @@ impl Config {
                  (got {target_blocks})"
             );
         }
+        if max_orders_per_bundle == Some(0) {
+            bail!("{MAX_ORDERS_PER_BUNDLE_VAR} must be greater than 0");
+        }
+        let max_orders_per_bundle =
+            max_orders_per_bundle.map(|v| NonZeroUsize::new(v).expect("already checked non-zero"));
 
         Ok(Config {
             chain_name,
@@ -202,6 +223,7 @@ impl Config {
             max_loss_percent,
             healthcheck_port,
             target_blocks,
+            max_orders_per_bundle,
             signer,
             constants,
         })

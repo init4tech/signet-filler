@@ -21,9 +21,12 @@ use init4_bin_base::{
 };
 use signet_constants::SignetConstants;
 use signet_tx_cache::TxCache;
-use std::sync::{
-    LazyLock,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio::time::{Duration, Instant};
 use tokio::{select, try_join};
@@ -104,6 +107,10 @@ impl FillerContext {
 
     pub(crate) const fn target_blocks(&self) -> u8 {
         self.config.target_blocks()
+    }
+
+    pub(crate) const fn max_orders_per_bundle(&self) -> Option<NonZeroUsize> {
+        self.config.max_orders_per_bundle()
     }
 
     pub(crate) const fn cancellation_token(&self) -> &CancellationToken {

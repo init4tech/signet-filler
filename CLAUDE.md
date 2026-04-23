@@ -47,6 +47,7 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - The filler loop uses `tokio::time::interval_at` aligned to chain slot boundaries minus `block_lead_duration`
 - Order processing pipeline: fetch -> filled-cache filter -> expired-deadline filter -> profitability score/sort -> per-order budget+nonce check -> submit bundle
 - Fill bundles target a configurable number of consecutive blocks (`SIGNET_FILLER_TARGET_BLOCKS`, default 5); the Permit2 deadline offset is derived from `block_lead_duration + target_blocks * slot_duration`, plus a 5s drift buffer
+- Orders per bundle can be capped via `SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE` (default unset). When the selected order count exceeds the cap, orders are chunked (profitability order preserved) and each chunk is submitted as its own fill bundle sequentially - submitting sequentially ensures the most profitable chunk acquires the lowest nonce, and alloy's `CachedNonceManager` then hands out consecutive nonces so multiple bundles can land across the target-block window in profitability order
 - Permit2 allowances are cached by a background task (10-min refresh); balances are queried fresh each cycle
 - Per-cycle `WorkingMap` tracks running balance/allowance budgets, decremented as orders are accepted (MAX allowances are not decremented)
 - Graceful shutdown via `CancellationToken` propagated through all async tasks
