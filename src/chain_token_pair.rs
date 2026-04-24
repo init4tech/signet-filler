@@ -13,6 +13,81 @@ static TOKEN_NAMES: OnceLock<HashMap<ChainTokenPair, &'static str>> = OnceLock::
 /// Human-readable names for known chain IDs.
 static CHAIN_NAMES: OnceLock<HashMap<u64, &'static str>> = OnceLock::new();
 
+/// Known token types across host and rollup chains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum KnownToken {
+    /// USDC on the host chain.
+    HostUsdc,
+    /// USDT on the host chain.
+    HostUsdt,
+    /// WETH on the host chain.
+    HostWeth,
+    /// WBTC on the host chain.
+    HostWbtc,
+    /// WETH on the rollup chain.
+    RollupWeth,
+    /// WBTC on the rollup chain.
+    RollupWbtc,
+    /// Native USD token on the rollup chain.
+    RollupUsd,
+}
+
+impl KnownToken {
+    /// All known tokens.
+    const ALL: [Self; 7] = [
+        Self::HostUsdc,
+        Self::HostUsdt,
+        Self::HostWeth,
+        Self::HostWbtc,
+        Self::RollupWeth,
+        Self::RollupWbtc,
+        Self::RollupUsd,
+    ];
+
+    /// Known ERC20 tokens that need Permit2 allowance checks. Native tokens are excluded because
+    /// they don't use ERC20 allowances.
+    pub(crate) const ERC20: [Self; 6] = [
+        Self::HostUsdc,
+        Self::HostUsdt,
+        Self::HostWeth,
+        Self::HostWbtc,
+        Self::RollupWeth,
+        Self::RollupWbtc,
+    ];
+
+    /// Human-readable name.
+    pub(crate) const fn name(&self) -> &'static str {
+        match self {
+            Self::HostUsdc => "host USDC",
+            Self::HostUsdt => "host USDT",
+            Self::HostWeth => "host WETH",
+            Self::HostWbtc => "host WBTC",
+            Self::RollupWeth => "rollup WETH",
+            Self::RollupWbtc => "rollup WBTC",
+            Self::RollupUsd => "rollup USD",
+        }
+    }
+
+    /// Resolve to the concrete [`ChainTokenPair`] using chain constants.
+    pub(crate) fn resolve(&self, constants: &SignetSystemConstants) -> ChainTokenPair {
+        let host_chain_id = constants.host_chain_id();
+        let ru_chain_id = constants.ru_chain_id();
+        let host_tokens = constants.host().tokens();
+        let rollup_tokens = constants.rollup().tokens();
+        match self {
+            Self::HostUsdc => ChainTokenPair::new(host_chain_id, host_tokens.usdc()),
+            Self::HostUsdt => ChainTokenPair::new(host_chain_id, host_tokens.usdt()),
+            Self::HostWeth => ChainTokenPair::new(host_chain_id, host_tokens.weth()),
+            Self::HostWbtc => ChainTokenPair::new(host_chain_id, host_tokens.wbtc()),
+            Self::RollupWeth => ChainTokenPair::new(ru_chain_id, rollup_tokens.weth()),
+            Self::RollupWbtc => ChainTokenPair::new(ru_chain_id, rollup_tokens.wbtc()),
+            Self::RollupUsd => {
+                ChainTokenPair::new(ru_chain_id, signet_constants::NATIVE_TOKEN_ADDRESS)
+            }
+        }
+    }
+}
+
 /// Identifies a token on a specific chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ChainTokenPair {
@@ -36,38 +111,15 @@ impl ChainTokenPair {
         self.token
     }
 
-    /// All known ERC20 tokens that need Permit2 allowance checks. Native tokens are excluded
-    /// because they don't use ERC20 allowances.
-    pub(crate) fn known_erc20_tokens(
-        constants: &SignetSystemConstants,
-    ) -> [(ChainTokenPair, &'static str); 6] {
-        let host_chain_id = constants.host_chain_id();
-        let ru_chain_id = constants.ru_chain_id();
-        let host_tokens = constants.host().tokens();
-        let rollup_tokens = constants.rollup().tokens();
-
-        [
-            (Self::new(host_chain_id, host_tokens.usdc()), "host USDC"),
-            (Self::new(host_chain_id, host_tokens.usdt()), "host USDT"),
-            (Self::new(host_chain_id, host_tokens.weth()), "host WETH"),
-            (Self::new(host_chain_id, host_tokens.wbtc()), "host WBTC"),
-            (Self::new(ru_chain_id, rollup_tokens.weth()), "rollup WETH"),
-            (Self::new(ru_chain_id, rollup_tokens.wbtc()), "rollup WBTC"),
-        ]
-    }
-
     /// Populates the global token and chain name lookups from chain constants. Called once during
     /// `FillerContext` initialization.
     pub(crate) fn init_token_names(constants: &SignetSystemConstants) {
-        let host_chain_id = constants.host_chain_id();
-        let ru_chain_id = constants.ru_chain_id();
-
-        let mut token_names: HashMap<Self, &'static str> =
-            Self::known_erc20_tokens(constants).into_iter().collect();
-        token_names
-            .insert(Self::new(ru_chain_id, signet_constants::NATIVE_TOKEN_ADDRESS), "rollup USD");
-
-        let chain_names = HashMap::from([(host_chain_id, "host"), (ru_chain_id, "rollup")]);
+        let token_names: HashMap<Self, &'static str> =
+            KnownToken::ALL.iter().map(|known| (known.resolve(constants), known.name())).collect();
+        let chain_names = HashMap::from([
+            (constants.host_chain_id(), "host"),
+            (constants.ru_chain_id(), "rollup"),
+        ]);
 
         if TOKEN_NAMES.set(token_names).is_err() {
             warn!("token names already initialized");

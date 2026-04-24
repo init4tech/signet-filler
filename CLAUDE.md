@@ -11,7 +11,8 @@ bin/filler.rs - Binary entrypoint (tokio multi-thread runtime)
 src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
 src/allowance.rs - AllowanceCache with background Permit2 allowance refresh task (10-min interval)
-src/filler_task/mod.rs - FillerTask struct, ChainToken: slot-aligned filler loop, order processing pipeline (profitability scoring/sorting, budget check, Permit2 nonce check)
+src/chain_token_pair.rs - KnownToken enum, ChainTokenPair: (chain_id, token) identifier with human-readable Display
+src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing pipeline (profitability scoring/sorting, budget check, Permit2 nonce check)
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
 src/filler_task/preflight.rs - WorkingMap: per-cycle token budget tracking (fresh balances + cached allowances), ERC20 balance queries
 src/metrics.rs - Prometheus metric definitions and recording helpers (counters, gauges, histograms)

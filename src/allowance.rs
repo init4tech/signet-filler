@@ -1,5 +1,5 @@
 use crate::FillerContext;
-use crate::{ChainTokenPair, FillProviderType, metrics};
+use crate::{ChainTokenPair, FillProviderType, KnownToken, metrics};
 use alloy::signers::Signer;
 use alloy::{
     primitives::{Address, U256},
@@ -68,8 +68,7 @@ impl AllowanceRefreshTask {
     #[instrument(skip_all, name = "initialize_allowance_refresh_task")]
     pub async fn initialize(context: &FillerContext) -> Self {
         let ru_chain_id = context.constants().system().ru_chain_id();
-        let tokens = ChainTokenPair::known_erc20_tokens(context.constants().system())
-            .map(|(pair, _name)| pair);
+        let tokens = KnownToken::ERC20.map(|known| known.resolve(context.constants().system()));
 
         let cache = context.allowance_cache().clone();
         let ru_provider = context.ru_provider().clone();

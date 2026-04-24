@@ -30,7 +30,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 mod chain_token_pair;
-pub(crate) use chain_token_pair::ChainTokenPair;
+pub(crate) use chain_token_pair::{ChainTokenPair, KnownToken};
 
 mod config;
 pub use config::{Config, config_from_env, env_var_info};
