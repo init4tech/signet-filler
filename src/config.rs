@@ -89,8 +89,8 @@ pub struct Config {
 
 impl Config {
     /// The Signet chain name (e.g. "parmigiana").
-    pub fn chain_name(&self) -> &str {
-        &self.chain_name
+    pub const fn chain_name(&self) -> &str {
+        self.chain_name.as_str()
     }
 
     /// URL for Host RPC node.

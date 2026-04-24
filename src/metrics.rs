@@ -1,6 +1,7 @@
 use core::time::Duration;
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use std::sync::LazyLock;
+use tokio::time::Instant;
 
 // Metric names
 const UPTIME_SECONDS: &str = "signet.filler.uptime_seconds";
@@ -13,6 +14,7 @@ const NONCE_CHECK_ERRORS: &str = "signet.filler.nonce_check_errors";
 const PRICING_ERRORS: &str = "signet.filler.pricing_errors";
 const FETCH_ORDER_ERRORS: &str = "signet.filler.fetch_order_errors";
 const CONNECTION_RETRY_ATTEMPTS: &str = "signet.filler.connection_retry_attempts";
+const PREFLIGHT_QUERY_ERRORS: &str = "signet.filler.preflight_query_errors";
 const MISSED_WINDOWS: &str = "signet.filler.missed_windows";
 const CYCLE_DURATION_SECONDS: &str = "signet.filler.cycle_duration_seconds";
 const ORDERS_PER_BUNDLE: &str = "signet.filler.orders_per_bundle";
@@ -24,7 +26,8 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
     describe_counter!(ORDERS_FETCHED, "Orders fetched from tx cache");
     describe_counter!(
         ORDERS_SKIPPED,
-        "Orders skipped (label: reason = already-filled / exceeds-max-loss / unknown-token)"
+        "Orders skipped (label: reason = already-filled / exceeds-max-loss / unknown-token / \
+        insufficient-filler-balance)"
     );
     describe_counter!(ORDERS_IN_BUNDLES, "Orders included in submitted fill bundles");
     describe_counter!(BUNDLES, "Bundle submissions (label: result = success / failure)");
@@ -35,6 +38,10 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
         CONNECTION_RETRY_ATTEMPTS,
         "Connection retry attempts during initialization (label: target = host-provider / \
         rollup-provider / transaction-cache)"
+    );
+    describe_counter!(
+        PREFLIGHT_QUERY_ERRORS,
+        "RPC errors during pre-flight checks (label: query = balance / allowance)"
     );
     describe_counter!(
         MISSED_WINDOWS,
@@ -48,6 +55,7 @@ pub(crate) enum OrderSkippedReason {
     AlreadyFilled,
     ExceedsMaxLoss,
     UnknownToken,
+    InsufficientFillerBalance,
 }
 
 impl OrderSkippedReason {
@@ -56,6 +64,7 @@ impl OrderSkippedReason {
             OrderSkippedReason::AlreadyFilled => "already-filled",
             OrderSkippedReason::ExceedsMaxLoss => "exceeds-max-loss",
             OrderSkippedReason::UnknownToken => "unknown-token",
+            OrderSkippedReason::InsufficientFillerBalance => "insufficient-filler-balance",
         }
     }
 }
@@ -96,9 +105,23 @@ pub(crate) fn record_uptime(elapsed: Duration) {
     gauge!(UPTIME_SECONDS).set(elapsed.as_secs_f64());
 }
 
-/// Increment the cycle counter.
-pub(crate) fn record_cycle() {
-    counter!(CYCLES).increment(1);
+/// RAII guard that records cycle count and duration metrics when dropped.
+pub(crate) struct CycleGuard {
+    start: Instant,
+}
+
+impl CycleGuard {
+    /// Start timing a new processing cycle.
+    pub(crate) fn new() -> Self {
+        Self { start: Instant::now() }
+    }
+}
+
+impl Drop for CycleGuard {
+    fn drop(&mut self) {
+        counter!(CYCLES).increment(1);
+        histogram!(CYCLE_DURATION_SECONDS).record(self.start.elapsed().as_secs_f64());
+    }
 }
 
 /// Record how many orders were fetched from the tx cache.
@@ -141,14 +164,28 @@ pub(crate) fn record_connection_attempt(target: ConnectionTarget) {
     counter!(CONNECTION_RETRY_ATTEMPTS, "target" => target.as_str()).increment(1);
 }
 
+pub(crate) enum PreflightQuery {
+    Balance,
+    Allowance,
+}
+
+impl PreflightQuery {
+    pub(crate) const fn as_str(&self) -> &'static str {
+        match self {
+            PreflightQuery::Balance => "balance",
+            PreflightQuery::Allowance => "allowance",
+        }
+    }
+}
+
+/// Record an RPC error during a pre-flight balance or allowance query.
+pub(crate) fn record_preflight_query_error(query: PreflightQuery) {
+    counter!(PREFLIGHT_QUERY_ERRORS, "query" => query.as_str()).increment(1);
+}
+
 /// Record a missed processing window.
 pub(crate) fn record_missed_window() {
     counter!(MISSED_WINDOWS).increment(1);
-}
-
-/// Record the duration of a processing cycle.
-pub(crate) fn record_cycle_duration(elapsed: Duration) {
-    histogram!(CYCLE_DURATION_SECONDS).record(elapsed.as_secs_f64());
 }
 
 /// Record the number of orders in a submitted bundle.

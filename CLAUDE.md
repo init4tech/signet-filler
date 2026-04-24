@@ -10,11 +10,14 @@ Order filler service for the Signet Parmigiana testnet. Monitors a transaction c
 bin/filler.rs - Binary entrypoint (tokio multi-thread runtime)
 src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
-src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing, Permit2 nonce fill-check, acceptable loss checks
+src/allowance.rs - AllowanceCache with background Permit2 allowance refresh task (10-min interval)
+src/chain_token_pair.rs - KnownToken enum, ChainTokenPair: (chain_id, token) identifier with human-readable Display
+src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing pipeline (profitability scoring/sorting, budget check, Permit2 nonce check)
 src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
+src/filler_task/preflight.rs - WorkingMap: per-cycle token budget tracking (fresh balances + cached allowances), ERC20 balance queries
 src/metrics.rs - Prometheus metric definitions and recording helpers (counters, gauges, histograms)
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
-src/fixed_pricing_client.rs - Fixed pricing with hardcoded token exchange rates and max loss threshold
+src/fixed_pricing_client.rs - Fixed pricing with hardcoded token exchange rates, profitability scoring, and max loss threshold
 Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookworm-slim)
 .github/workflows/filler-ecr-cd.yml - CD workflow: build and push Docker image to AWS ECR
 ```
@@ -42,4 +45,7 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - `Config` exposes only getter methods; construction is internal via `config_from_env()`
 - Provider connections retry indefinitely on transient errors using `backon`
 - The filler loop uses `tokio::time::interval_at` aligned to chain slot boundaries minus `block_lead_duration`
+- Order processing pipeline: fetch -> filled-cache filter -> profitability score/sort -> per-order budget+nonce check -> submit bundle
+- Permit2 allowances are cached by a background task (10-min refresh); balances are queried fresh each cycle
+- Per-cycle `WorkingMap` tracks running balance/allowance budgets, decremented as orders are accepted (MAX allowances are not decremented)
 - Graceful shutdown via `CancellationToken` propagated through all async tasks

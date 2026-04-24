@@ -1,5 +1,7 @@
-use super::FillProviderType;
-use crate::metrics::{self, ConnectionTarget};
+use crate::{
+    AllowanceCache, ChainTokenPair, Config, FillProviderType,
+    metrics::{self, ConnectionTarget},
+};
 use alloy::{
     network::EthereumWallet,
     providers::{Provider, ProviderBuilder},
@@ -9,7 +11,7 @@ use alloy::{
 };
 use backon::{ExponentialBuilder, Retryable};
 use core::fmt::{self, Display, Formatter};
-use eyre::{Context, Result};
+use eyre::{Context, Result, bail};
 use init4_bin_base::{
     deps::tracing::{debug, info, instrument, warn},
     utils::{
@@ -17,12 +19,128 @@ use init4_bin_base::{
         signer::{LocalOrAws, LocalOrAwsConfig},
     },
 };
+use signet_constants::SignetConstants;
 use signet_tx_cache::TxCache;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::time::Duration;
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicUsize, Ordering},
+};
+use tokio::time::{Duration, Instant};
+use tokio::{select, try_join};
+use tokio_util::sync::CancellationToken;
+
+/// Shared infrastructure created during initialization, used to construct the filler and
+/// allowance refresh tasks.
+#[derive(Debug)]
+pub struct FillerContext {
+    config: Config,
+    cancellation_token: CancellationToken,
+    app_start_instant: Instant,
+    signer: LocalOrAws,
+    host_provider: FillProviderType,
+    ru_provider: FillProviderType,
+    tx_cache: TxCache,
+    allowance_cache: AllowanceCache,
+}
+
+impl FillerContext {
+    /// Connect to providers, signer, and transaction cache, returning the shared context.
+    #[instrument(skip_all, name = "initialize_filler_context")]
+    pub async fn initialize(config: Config, cancellation_token: CancellationToken) -> Result<Self> {
+        let app_start_instant = Instant::now();
+        LazyLock::force(&metrics::DESCRIPTIONS);
+        ChainTokenPair::init_token_names(config.constants().system());
+
+        if config.max_loss_percent() > 100 {
+            bail!(
+                "invalid config value for max loss percent ({}), must be in range [0, 100]",
+                config.max_loss_percent()
+            );
+        }
+
+        let signer = connect_signer(config.signer()).await?;
+        let wallet = EthereumWallet::from(signer.clone());
+
+        let (host_provider, ru_provider, tx_cache) = select! {
+            biased;
+            _ = cancellation_token.cancelled() => {
+                debug!("cancelling initialization");
+                bail!("initialization cancelled");
+            }
+            result = async {
+                try_join!(
+                    connect_to_host_provider(config.host_rpc(), wallet.clone()),
+                    connect_to_rollup_provider(config.ru_rpc(), wallet),
+                    connect_to_tx_cache(config.constants().environment().transaction_cache())
+                )
+            } => result.wrap_err("initialization failure")?,
+        };
+        let allowance_cache = AllowanceCache::new();
+
+        Ok(Self {
+            config,
+            cancellation_token,
+            app_start_instant,
+            signer,
+            host_provider,
+            ru_provider,
+            tx_cache,
+            allowance_cache,
+        })
+    }
+
+    pub(crate) const fn app_start_instant(&self) -> Instant {
+        self.app_start_instant
+    }
+
+    pub(crate) const fn constants(&self) -> &SignetConstants {
+        self.config.constants()
+    }
+
+    pub(crate) const fn chain_name(&self) -> &str {
+        self.config.chain_name()
+    }
+
+    pub(crate) const fn block_lead_duration(&self) -> Duration {
+        self.config.block_lead_duration()
+    }
+
+    pub(crate) const fn max_loss_percent(&self) -> u8 {
+        self.config.max_loss_percent()
+    }
+
+    pub(crate) const fn cancellation_token(&self) -> &CancellationToken {
+        &self.cancellation_token
+    }
+
+    pub(crate) const fn signer(&self) -> &LocalOrAws {
+        &self.signer
+    }
+
+    pub(crate) const fn host_provider(&self) -> &FillProviderType {
+        &self.host_provider
+    }
+
+    pub(crate) const fn ru_provider(&self) -> &FillProviderType {
+        &self.ru_provider
+    }
+
+    pub(crate) const fn tx_cache(&self) -> &TxCache {
+        &self.tx_cache
+    }
+
+    pub(crate) const fn allowance_cache(&self) -> &AllowanceCache {
+        &self.allowance_cache
+    }
+
+    /// The port for the healthcheck HTTP server.
+    pub const fn healthcheck_port(&self) -> u16 {
+        self.config.healthcheck_port()
+    }
+}
 
 #[instrument(skip_all)]
-pub(super) async fn connect_signer(config: &LocalOrAwsConfig) -> Result<LocalOrAws> {
+async fn connect_signer(config: &LocalOrAwsConfig) -> Result<LocalOrAws> {
     debug!("connecting to signer");
     let signer = config.connect().await?;
     info!(signer_address = %signer.address(), "connected to signer");
@@ -30,7 +148,7 @@ pub(super) async fn connect_signer(config: &LocalOrAwsConfig) -> Result<LocalOrA
 }
 
 #[instrument(skip_all, fields(url = %DisplayUrl::from(config)))]
-pub(super) async fn connect_to_host_provider(
+async fn connect_to_host_provider(
     config: &ProviderConfig,
     wallet: EthereumWallet,
 ) -> Result<FillProviderType> {
@@ -43,7 +161,7 @@ pub(super) async fn connect_to_host_provider(
 }
 
 #[instrument(skip_all, fields(url = %DisplayUrl::from(config)))]
-pub(super) async fn connect_to_rollup_provider(
+async fn connect_to_rollup_provider(
     config: &PubSubConfig,
     wallet: EthereumWallet,
 ) -> Result<FillProviderType> {
@@ -56,7 +174,7 @@ pub(super) async fn connect_to_rollup_provider(
 }
 
 #[instrument]
-pub(super) async fn connect_to_tx_cache(url: &str) -> Result<TxCache> {
+async fn connect_to_tx_cache(url: &str) -> Result<TxCache> {
     let tx_cache = TxCache::new_from_string(url)
         .wrap_err_with(|| format!("failed to parse transaction cache url '{url}'"))?;
 

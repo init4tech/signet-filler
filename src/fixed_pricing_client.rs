@@ -80,8 +80,16 @@ impl FixedPricingClient {
         Self { max_loss_percent, token_info }
     }
 
+    /// Computes the filler's profit margin for an order in normalized 18-decimal USD.
+    ///
+    /// Returns `Ok(Some(margin))` where margin is `normalized_input - normalized_output` if the
+    /// order is within the acceptable loss threshold, `Ok(None)` if the order exceeds the maximum
+    /// acceptable loss, or `Err` if the profitability cannot be computed.
     #[instrument(skip_all, fields(order_hash = %order.order_hash()))]
-    pub(crate) fn is_acceptable(&self, order: &SignedOrder) -> Result<bool, FixedPricingError> {
+    pub(crate) fn profitability(
+        &self,
+        order: &SignedOrder,
+    ) -> Result<Option<i128>, FixedPricingError> {
         if order.permit().permit.permitted.is_empty() {
             return Err(FixedPricingError::NoInputs);
         }
@@ -91,7 +99,7 @@ impl FixedPricingClient {
 
         // Normalize a raw token amount to an 18-decimal USD-equivalent value and add it to the
         // running total, returning the new total:
-        // `runnning_total + (amount * price_usd * 10^(18 - decimals))`
+        // `running_total + (amount * price_usd * 10^(18 - decimals))`
         let try_sum = |running_total: U256,
                        (token_address, amount): (&Address, U256)|
          -> Result<U256, FixedPricingError> {
@@ -122,7 +130,7 @@ impl FixedPricingClient {
             .map(|output| (&output.token, output.amount))
             .try_fold(U256::ZERO, try_sum)?;
 
-        // acceptable if inputs/outputs >= 90%, i.e. inputs * 100 >= outputs * 90
+        // Acceptable if inputs/outputs >= (100 - max_loss)%, i.e. inputs * 100 >= outputs * (100 - max_loss)
         let lhs = normalized_total_input
             .checked_mul(U256::from(100))
             .ok_or(FixedPricingError::Overflow)?;
@@ -131,17 +139,32 @@ impl FixedPricingClient {
             .map(U256::from)
             .and_then(|percent| normalized_total_output.checked_mul(percent))
             .ok_or(FixedPricingError::Overflow)?;
-        let is_acceptable = lhs >= rhs;
+
+        if lhs < rhs {
+            trace!(
+                %normalized_total_input,
+                %normalized_total_output,
+                max_loss_percent = self.max_loss_percent,
+                "order exceeds max loss threshold"
+            );
+            return Ok(None);
+        }
+
+        let input_i128: i128 =
+            normalized_total_input.try_into().map_err(|_| FixedPricingError::Overflow)?;
+        let output_i128: i128 =
+            normalized_total_output.try_into().map_err(|_| FixedPricingError::Overflow)?;
+        let margin = input_i128.checked_sub(output_i128).ok_or(FixedPricingError::Overflow)?;
 
         trace!(
             %normalized_total_input,
             %normalized_total_output,
+            margin,
             max_loss_percent = self.max_loss_percent,
-            is_acceptable,
-            "acceptable loss check"
+            "profitability check"
         );
 
-        Ok(is_acceptable)
+        Ok(Some(margin))
     }
 }
 
@@ -193,21 +216,26 @@ mod tests {
     fn zero_max_loss_equal_values_is_acceptable() {
         let client = parmigiana_client(0);
         let order = usdc_order(1_000_000, 1_000_000);
-        assert!(client.is_acceptable(&order).unwrap());
+        // Equal values: margin = 0
+        assert_eq!(client.profitability(&order).unwrap(), Some(0));
     }
 
     #[test]
     fn zero_max_loss_input_less_than_output_is_not_acceptable() {
         let client = parmigiana_client(0);
         let order = usdc_order(999_999, 1_000_000);
-        assert!(!client.is_acceptable(&order).unwrap());
+        assert_eq!(client.profitability(&order).unwrap(), None);
     }
 
     #[test]
     fn zero_max_loss_input_greater_than_output_is_acceptable() {
         let client = parmigiana_client(0);
         let order = usdc_order(1_000_001, 1_000_000);
-        assert!(client.is_acceptable(&order).unwrap());
+        let margin = client
+            .profitability(&order)
+            .expect("profitability should not error")
+            .expect("order should be acceptable");
+        assert!(margin > 0);
     }
 
     // -- max_loss_percent = 100: always acceptable --
@@ -215,9 +243,14 @@ mod tests {
     #[test]
     fn max_loss_100_always_acceptable() {
         let client = parmigiana_client(100);
-        // input * 100 >= output * (100 - 100) → input * 100 >= 0 → always true
+        // input * 100 >= output * (100 - 100) -> input * 100 >= 0 -> always true
         let order = usdc_order(1, 1_000_000);
-        assert!(client.is_acceptable(&order).unwrap());
+        // 1 USDC in, 1_000_000 USDC out: margin should be deeply negative
+        let margin = client
+            .profitability(&order)
+            .expect("profitability should not error")
+            .expect("order should be acceptable at 100% max loss");
+        assert_eq!(margin, -999_999_000_000_000_000_i128);
     }
 
     // -- max_loss_percent = 101: overflows the u8 subtraction --
@@ -226,7 +259,7 @@ mod tests {
     fn max_loss_101_overflows() {
         let client = parmigiana_client(101);
         let order = usdc_order(1_000_000, 1_000_000);
-        assert!(matches!(client.is_acceptable(&order), Err(FixedPricingError::Overflow)));
+        assert!(matches!(client.profitability(&order), Err(FixedPricingError::Overflow)));
     }
 
     // -- standard threshold (10%) --
@@ -234,9 +267,14 @@ mod tests {
     #[test]
     fn standard_threshold_at_boundary_is_acceptable() {
         let client = parmigiana_client(10);
-        // input * 100 >= output * 90 → 900_000 * 100 >= 1_000_000 * 90 → 90M >= 90M
+        // input * 100 >= output * 90 -> 900_000 * 100 >= 1_000_000 * 90 -> 90M >= 90M
         let order = usdc_order(900_000, 1_000_000);
-        assert!(client.is_acceptable(&order).unwrap());
+        let margin = client
+            .profitability(&order)
+            .expect("profitability should not error")
+            .expect("order should be acceptable at 10% max loss boundary");
+        // Filler takes a 10% loss: margin is negative
+        assert!(margin < 0);
     }
 
     #[test]
@@ -244,14 +282,18 @@ mod tests {
         let client = parmigiana_client(10);
         // 899_999 * 100 = 89_999_900 < 1_000_000 * 90 = 90_000_000
         let order = usdc_order(899_999, 1_000_000);
-        assert!(!client.is_acceptable(&order).unwrap());
+        assert_eq!(client.profitability(&order).unwrap(), None);
     }
 
     #[test]
     fn standard_threshold_above_boundary_is_acceptable() {
         let client = parmigiana_client(10);
         let order = usdc_order(u64::MAX, 1_000_000);
-        assert!(client.is_acceptable(&order).unwrap());
+        let margin = client
+            .profitability(&order)
+            .expect("profitability should not error")
+            .expect("order should be acceptable above 10% max loss boundary");
+        assert!(margin > 0);
     }
 
     // -- error cases --
@@ -277,7 +319,7 @@ mod tests {
                 chainId: 0,
             }],
         );
-        assert!(matches!(client.is_acceptable(&order), Err(FixedPricingError::NoInputs)));
+        assert!(matches!(client.profitability(&order), Err(FixedPricingError::NoInputs)));
     }
 
     #[test]
@@ -299,7 +341,7 @@ mod tests {
             },
             vec![],
         );
-        assert!(matches!(client.is_acceptable(&order), Err(FixedPricingError::NoOutputs)));
+        assert!(matches!(client.profitability(&order), Err(FixedPricingError::NoOutputs)));
     }
 
     #[test]
@@ -325,9 +367,34 @@ mod tests {
             }],
         );
         assert!(matches!(
-            client.is_acceptable(&order),
+            client.profitability(&order),
             Err(FixedPricingError::UnknownToken(addr)) if addr == unknown
         ));
+    }
+
+    // -- i128 overflow on large normalized values --
+
+    #[test]
+    fn profitability_overflows_i128_on_huge_normalized_value() {
+        let client = parmigiana_client(0);
+        let usdc = SignetSystemConstants::parmigiana().host().tokens().usdc();
+        // USDC normalization multiplies by 10^12 (price=1, scale=10^(18-6)). Using u128::MAX as
+        // the raw amount produces a normalized value of ~3.4e50, well beyond i128::MAX (~1.7e38).
+        // The U256 arithmetic and threshold check succeed, but the final i128 conversion fails.
+        let huge_amount = U256::from(u128::MAX);
+        let order = SignedOrder::new(
+            Permit2Batch {
+                permit: PermitBatchTransferFrom {
+                    permitted: vec![TokenPermissions { token: usdc, amount: huge_amount }],
+                    nonce: U256::ZERO,
+                    deadline: U256::ZERO,
+                },
+                owner: Address::ZERO,
+                signature: Bytes::from([0; 65]),
+            },
+            vec![Output { token: usdc, amount: huge_amount, recipient: Address::ZERO, chainId: 0 }],
+        );
+        assert!(matches!(client.profitability(&order), Err(FixedPricingError::Overflow)));
     }
 
     // -- cross-token normalization --
@@ -359,6 +426,7 @@ mod tests {
                 chainId: 0,
             }],
         );
-        assert!(client.is_acceptable(&order).unwrap());
+        // Equal USD value: margin = 0
+        assert_eq!(client.profitability(&order).unwrap(), Some(0));
     }
 }
