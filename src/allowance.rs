@@ -1,11 +1,9 @@
 use crate::FillerContext;
-use crate::{ChainTokenPair, FillProviderType, KnownToken, metrics};
+use crate::{ChainTokenPair, FillProviderType, IERC20, KnownToken, metrics};
+use alloy::primitives::{Address, U256};
 use alloy::signers::Signer;
-use alloy::{
-    primitives::{Address, U256},
-    sol,
-};
-use futures_util::{StreamExt, stream::FuturesUnordered};
+use core::fmt::{self, Display, Formatter};
+use futures_util::future::join_all;
 use init4_bin_base::deps::tracing::{debug, info, instrument, trace, warn};
 use signet_orders::permit2::PERMIT2;
 use std::{
@@ -14,14 +12,6 @@ use std::{
 };
 use tokio::{select, time::Duration};
 use tokio_util::sync::CancellationToken;
-
-sol! {
-    /// Minimal ERC20 interface for allowance queries.
-    #[sol(rpc)]
-    interface IERC20Allowance {
-        function allowance(address owner, address spender) external view returns (uint256);
-    }
-}
 
 /// How often the background task refreshes cached Permit2 allowances.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(600);
@@ -48,6 +38,30 @@ impl AllowanceCache {
     /// their previous cached value rather than falling to zero on a transient RPC error.
     fn update(&self, new_entries: HashMap<ChainTokenPair, U256>) {
         self.inner.write().unwrap().extend(new_entries);
+    }
+}
+
+/// Per-token outcome of the Permit2 allowance query. The error is wrapped as an [`eyre::Report`]
+/// so the success value and the failure reason can flow together through the refresh pipeline
+/// while preserving the underlying alloy error chain for log output.
+#[derive(Debug)]
+struct AllowanceQueryResult {
+    chain_token: ChainTokenPair,
+    outcome: eyre::Result<U256>,
+}
+
+/// Wrapper for logging an allowance value: prints the decimal representation, except for
+/// [`U256::MAX`] which is rendered as the sentinel `U256::MAX` since the raw decimal is a 78-digit
+/// number that offers no extra information and obscures the "unlimited approval" meaning.
+struct DisplayAllowance(U256);
+
+impl Display for DisplayAllowance {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        if self.0 == U256::MAX {
+            formatter.write_str("U256::MAX (treated as unlimited, doesn't auto decrement)")
+        } else {
+            write!(formatter, "{}", self.0)
+        }
     }
 }
 
@@ -90,7 +104,7 @@ impl AllowanceRefreshTask {
             _ = context.cancellation_token().cancelled() => {
                 debug!("allowance refresh task initialization cancelled");
             }
-            _ = task.refresh() => {}
+            _ = task.startup_refresh() => {}
         }
         task
     }
@@ -115,39 +129,108 @@ impl AllowanceRefreshTask {
         }
     }
 
-    /// Queries Permit2 allowances for all known tokens and updates the cache.
+    /// Queries Permit2 allowances for all known tokens, updates the cache, and logs a compact
+    /// summary for the periodic refresh path.
     #[instrument(skip_all, fields(token_count = self.tokens.len()))]
     async fn refresh(&self) {
-        let entries = self
-            .tokens
-            .iter()
-            .map(|chain_token| async move {
+        let results = self.query_and_cache().await;
+        for AllowanceQueryResult { chain_token, outcome } in results {
+            outcome
+                .map(|allowance| {
+                    trace!(
+                        %chain_token,
+                        allowance = %DisplayAllowance(allowance),
+                        "refreshed Permit2 allowance",
+                    );
+                })
+                .unwrap_or_else(|error| {
+                    metrics::record_preflight_query_error(metrics::PreflightQuery::Allowance);
+                    warn!(
+                        %chain_token,
+                        error = format!("{error:#}"),
+                        "failed to refresh Permit2 allowance",
+                    );
+                });
+        }
+        info!("allowance cache refreshed");
+    }
+
+    /// Same query + cache update as [`Self::refresh`], but logs one info line per token and a
+    /// summary warning if no known token has a non-zero allowance. Mirrors the startup balance
+    /// report in `initialization.rs` so operators see both funding and Permit2 approvals surfaced
+    /// the same way at deploy time.
+    #[instrument(skip_all)]
+    async fn startup_refresh(&self) {
+        let results = self.query_and_cache().await;
+        let total = results.len();
+        let mut non_zero_count = 0_usize;
+        let mut error_count = 0_usize;
+        for AllowanceQueryResult { chain_token, outcome } in results {
+            outcome
+                .map(|allowance| {
+                    if !allowance.is_zero() {
+                        non_zero_count += 1;
+                    }
+                    info!(
+                        %chain_token,
+                        allowance = %DisplayAllowance(allowance),
+                        "startup allowance",
+                    );
+                })
+                .unwrap_or_else(|error| {
+                    error_count += 1;
+                    metrics::record_preflight_query_error(metrics::PreflightQuery::Allowance);
+                    warn!(
+                        %chain_token,
+                        error = format!("{error:#}"),
+                        "failed to query startup allowance",
+                    );
+                });
+        }
+        if total > 0 && error_count == total {
+            warn!(
+                "all startup allowance queries failed; could not determine Permit2 approval state"
+            );
+        } else if non_zero_count == 0 {
+            warn!(
+                error_count,
+                "no non-zero allowance found among successfully-queried tokens; check Permit2 approvals"
+            );
+        }
+    }
+
+    /// Queries Permit2 allowances for all known tokens concurrently, merges every successful
+    /// result into the cache, and returns the full per-token results (including errors) for the
+    /// caller to log. Failed queries are filtered out before [`AllowanceCache::update`] is called,
+    /// so a token whose query fails this round retains its previously cached value rather than
+    /// being clobbered.
+    async fn query_and_cache(&self) -> Vec<AllowanceQueryResult> {
+        let results: Vec<AllowanceQueryResult> =
+            join_all(self.tokens.iter().map(|chain_token| async move {
                 let provider = if chain_token.chain_id() == self.ru_chain_id {
                     &self.ru_provider
                 } else {
                     &self.host_provider
                 };
-                let contract = IERC20Allowance::new(chain_token.token(), provider);
-                let allowance_call = contract.allowance(self.filler_address, PERMIT2);
-                match allowance_call.call().await {
-                    Ok(allowance) => {
-                        trace!(%chain_token, %allowance, "refreshed Permit2 allowance");
-                        Some((*chain_token, allowance))
-                    }
-                    Err(error) => {
-                        warn!(%error, %chain_token, "failed to refresh Permit2 allowance");
-                        metrics::record_preflight_query_error(metrics::PreflightQuery::Allowance);
-                        None
-                    }
-                }
-            })
-            .collect::<FuturesUnordered<_>>()
-            .filter_map(|result| async move { result })
-            .collect()
+                let contract = IERC20::new(chain_token.token(), provider);
+                let outcome = contract
+                    .allowance(self.filler_address, PERMIT2)
+                    .call()
+                    .await
+                    .map_err(eyre::Report::from);
+                AllowanceQueryResult { chain_token: *chain_token, outcome }
+            }))
             .await;
 
+        let entries: HashMap<ChainTokenPair, U256> = results
+            .iter()
+            .filter_map(|entry| {
+                entry.outcome.as_ref().ok().map(|allowance| (entry.chain_token, *allowance))
+            })
+            .collect();
         self.cache.update(entries);
-        info!("allowance cache refreshed");
+
+        results
     }
 }
 
