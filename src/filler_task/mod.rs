@@ -25,7 +25,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod in_flight;
 mod preflight;
+use in_flight::InFlightTracker;
 use preflight::WorkingMap;
 
 const FILLED_ORDERS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10240).unwrap();
@@ -46,6 +48,7 @@ pub struct FillerTask {
     pricing_client: FixedPricingClient,
     allowance_cache: AllowanceCache,
     filled_orders: Mutex<LruCache<B256, ()>>,
+    in_flight: InFlightTracker,
     target_blocks: u8,
     max_orders_per_bundle: Option<NonZeroUsize>,
     block_lead_duration: Duration,
@@ -88,11 +91,14 @@ impl FillerTask {
             context.max_loss_percent(),
         );
 
+        let in_flight_ttl = Duration::from_secs(deadline_offset);
+
         Self {
             filler,
             pricing_client,
             allowance_cache: context.allowance_cache().clone(),
             filled_orders: Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE)),
+            in_flight: InFlightTracker::new(in_flight_ttl),
             target_blocks,
             max_orders_per_bundle: context.max_orders_per_bundle(),
             block_lead_duration,
@@ -170,6 +176,8 @@ impl FillerTask {
     async fn process_orders(&self) -> Result<()> {
         let _cycle_guard = metrics::CycleGuard::new();
 
+        self.reconcile_in_flight().await;
+
         let scored = self.fetch_and_score_orders().await?;
         if scored.is_empty() {
             return Ok(());
@@ -190,7 +198,8 @@ impl FillerTask {
     #[instrument(skip_all)]
     async fn fetch_and_score_orders(&self) -> Result<Vec<(i128, SignedOrder)>> {
         let mut orders_count = 0_u64;
-        let mut orders_after_expiry_filter = 0_u64;
+        let mut post_expiry = 0_u64;
+        let mut post_filled_cache = 0_u64;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock set before UNIX epoch")
@@ -206,12 +215,15 @@ impl FillerTask {
             .get_orders()
             .inspect_ok(|_| orders_count += 1)
             .try_filter_map(|order| not_expired(order, earliest_fill_timestamp))
-            .inspect_ok(|_| orders_after_expiry_filter += 1)
+            .inspect_ok(|_| post_expiry += 1)
             .try_filter_map(|order| self.not_in_filled_cache(order))
+            .inspect_ok(|_| post_filled_cache += 1)
+            .try_filter_map(|order| self.not_in_flight(order))
             .try_collect()
             .await
             .inspect_err(|_| metrics::record_fetch_order_error())
             .wrap_err("failed to fetch orders")?;
+        let post_in_flight = orders.len() as u64;
 
         metrics::record_orders_fetched(orders_count);
 
@@ -221,8 +233,9 @@ impl FillerTask {
             } else {
                 info!(
                     orders_count,
-                    expired = orders_count - orders_after_expiry_filter,
-                    already_filled = orders_after_expiry_filter,
+                    expired = orders_count - post_expiry,
+                    already_filled = post_expiry - post_filled_cache,
+                    in_flight = post_filled_cache - post_in_flight,
                     "all fetched orders filtered out"
                 );
             }
@@ -264,6 +277,10 @@ impl FillerTask {
     /// budget and nonce checks in profitability order.
     #[instrument(skip_all, fields(scored_len = scored.len()))]
     async fn select_fillable_orders(&self, scored: Vec<(i128, SignedOrder)>) -> Vec<SignedOrder> {
+        // Snapshot in-flight earmarks for `WorkingMap::build` to pre-apply to the per-cycle
+        // budget, so candidates that share a token with a previously-submitted order don't
+        // greenlight against funds already committed in flight.
+        let earmarks = self.in_flight.earmarks();
         let (mut working_map, filled_hashes) = tokio::join!(
             WorkingMap::build(
                 &scored,
@@ -272,6 +289,7 @@ impl FillerTask {
                 self.filler.submitter().host_provider(),
                 self.filler.constants(),
                 &self.allowance_cache,
+                &earmarks,
             ),
             async {
                 join_all(scored.iter().map(|(_margin, order)| self.check_filled(order)))
@@ -285,6 +303,7 @@ impl FillerTask {
         let mut orders_to_fill = Vec::new();
         for (_margin, order) in scored {
             if filled_hashes.contains(order.order_hash()) {
+                metrics::record_order_skipped(metrics::OrderSkippedReason::AlreadyFilled);
                 continue;
             }
 
@@ -346,6 +365,9 @@ impl FillerTask {
     }
 
     /// Submits a single fill bundle and records metrics. Returns `true` on success.
+    ///
+    /// On success, each order is recorded as in-flight so it isn't re-submitted (or double-counted
+    /// in the budget) before its target-block window has passed.
     async fn submit_one_bundle(&self, orders: Vec<SignedOrder>) -> bool {
         debug_assert!(!orders.is_empty(), "orders is empty");
         let orders_in_bundle = orders.len();
@@ -354,6 +376,10 @@ impl FillerTask {
         // carried by the `BUNDLES` counter's `result` label.
         metrics::record_orders_in_bundle(orders_in_bundle as u64);
         metrics::record_orders_per_bundle(orders_in_bundle as f64);
+
+        let order_hashes: Vec<B256> = orders.iter().map(|order| *order.order_hash()).collect();
+        self.in_flight.track(orders.clone(), self.filler.constants());
+
         match self.filler.fill(orders, self.target_blocks).await {
             Ok(responses) => {
                 info!(
@@ -367,6 +393,7 @@ impl FillerTask {
             Err(error) => {
                 warn!(%error, orders_in_bundle, "failed to fill orders");
                 metrics::record_bundle(metrics::SubmissionResult::Failure);
+                self.in_flight.clear_many(&order_hashes);
                 false
             }
         }
@@ -404,6 +431,36 @@ impl FillerTask {
         }
     }
 
+    /// Queries the Permit2 nonce bitmap for every live in-flight order and clears the entries
+    /// whose nonce has been consumed. Without this step the earmarked budget for a landed order
+    /// would stay reserved until the entry's TTL lapsed naturally - the on-chain balance is
+    /// already debited by the time the bundle lands, so leaving the earmark in place would
+    /// double-count the spent amount and shrink the available budget for unrelated orders.
+    #[instrument(skip_all)]
+    async fn reconcile_in_flight(&self) {
+        let live = self.in_flight.live_orders();
+        if live.is_empty() {
+            return;
+        }
+        join_all(live.iter().map(|order| self.check_filled(order))).await;
+    }
+
+    /// Returns `Ok(Some(order))` if the order has no live in-flight bundle, or `Ok(None)` if a
+    /// previously-submitted bundle for it is still inside its target-block window. Re-submitting
+    /// would race two host-chain transactions for the same Permit2 `(owner, nonce)` slot; the
+    /// loser wastes host-chain gas reverting on an already-consumed nonce.
+    ///
+    /// Never returns `Err`, but this signature suits usage in `try_filter_map`.
+    async fn not_in_flight(&self, order: SignedOrder) -> Result<Option<SignedOrder>, FillerError> {
+        if self.in_flight.is_in_flight(order.order_hash()) {
+            trace!(order_hash = %order.order_hash(), "skipping in-flight order");
+            metrics::record_order_skipped(metrics::OrderSkippedReason::InFlight);
+            Ok(None)
+        } else {
+            Ok(Some(order))
+        }
+    }
+
     /// Checks whether the order's Permit2 nonce has been consumed on the rollup chain. Returns
     /// `Some(order_hash)` if filled, `None` if unfilled or on RPC error.
     async fn check_filled(&self, order: &SignedOrder) -> Option<B256> {
@@ -428,7 +485,7 @@ impl FillerTask {
         if is_filled {
             trace!(order_hash = %order.order_hash(), "order already filled");
             self.filled_orders.lock().unwrap().put(*order.order_hash(), ());
-            metrics::record_order_skipped(metrics::OrderSkippedReason::AlreadyFilled);
+            self.in_flight.clear(order.order_hash());
             Some(*order.order_hash())
         } else {
             None
