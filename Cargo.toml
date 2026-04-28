@@ -13,11 +13,11 @@ name = "signet-filler"
 path = "bin/filler.rs"
 
 [dependencies]
-init4-bin-base = { version = "0.18.0-rc.13", features = ["aws"] }
-signet-constants = "0.16.3"
-signet-orders = "0.16.3"
-signet-tx-cache = "0.16.3"
-signet-types = "0.16.3"
+init4-bin-base = { version = "0.21.0", features = ["aws"] }
+signet-constants = "0.18.0"
+signet-orders = "0.18.0"
+signet-tx-cache = "0.18.0"
+signet-types = "0.18.0"
 
 alloy = { version = "1.6.1", features = ["full", "signer-local"] }
 axum = "0.8.8"
@@ -34,4 +34,5 @@ tokio-util = "0.7.18"
 tracing = "0.1.44"
 
 [dev-dependencies]
-signet-zenith = "0.16.3"
+signet-zenith = "0.18.0"
+tokio = { version = "1.49.0", features = ["test-util"] }

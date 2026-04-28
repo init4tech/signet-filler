@@ -27,8 +27,9 @@ pub(crate) static DESCRIPTIONS: LazyLock<()> = LazyLock::new(|| {
     describe_counter!(ORDERS_FETCHED, "Orders fetched from tx cache");
     describe_counter!(
         ORDERS_SKIPPED,
-        "Orders skipped (label: reason = already-filled / expired / exceeds-max-loss / \
-        unknown-token / insufficient-filler-balance)"
+        "Orders skipped (label: reason = already-filled (pre-submit only; excludes reconciled \
+        in-flight) / expired / exceeds-max-loss / unknown-token / insufficient-filler-balance / \
+        in-flight)"
     );
     describe_counter!(
         ORDERS_IN_BUNDLES,
@@ -67,6 +68,7 @@ pub(crate) enum OrderSkippedReason {
     ExceedsMaxLoss,
     UnknownToken,
     InsufficientFillerBalance,
+    InFlight,
 }
 
 impl OrderSkippedReason {
@@ -77,6 +79,7 @@ impl OrderSkippedReason {
             OrderSkippedReason::ExceedsMaxLoss => "exceeds-max-loss",
             OrderSkippedReason::UnknownToken => "unknown-token",
             OrderSkippedReason::InsufficientFillerBalance => "insufficient-filler-balance",
+            OrderSkippedReason::InFlight => "in-flight",
         }
     }
 }
