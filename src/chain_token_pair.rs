@@ -16,6 +16,8 @@ static CHAIN_NAMES: OnceLock<HashMap<u64, &'static str>> = OnceLock::new();
 /// Known token types across host and rollup chains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum KnownToken {
+    /// Native ETH on the host chain (used to pay gas for fill bundles).
+    HostEth,
     /// USDC on the host chain.
     HostUsdc,
     /// USDT on the host chain.
@@ -34,7 +36,8 @@ pub(crate) enum KnownToken {
 
 impl KnownToken {
     /// All known tokens.
-    const ALL: [Self; 7] = [
+    pub(crate) const ALL: [Self; 8] = [
+        Self::HostEth,
         Self::HostUsdc,
         Self::HostUsdt,
         Self::HostWeth,
@@ -58,6 +61,7 @@ impl KnownToken {
     /// Human-readable name.
     pub(crate) const fn name(&self) -> &'static str {
         match self {
+            Self::HostEth => "host ETH",
             Self::HostUsdc => "host USDC",
             Self::HostUsdt => "host USDT",
             Self::HostWeth => "host WETH",
@@ -75,6 +79,9 @@ impl KnownToken {
         let host_tokens = constants.host().tokens();
         let rollup_tokens = constants.rollup().tokens();
         match self {
+            Self::HostEth => {
+                ChainTokenPair::new(host_chain_id, signet_constants::NATIVE_TOKEN_ADDRESS)
+            }
             Self::HostUsdc => ChainTokenPair::new(host_chain_id, host_tokens.usdc()),
             Self::HostUsdt => ChainTokenPair::new(host_chain_id, host_tokens.usdt()),
             Self::HostWeth => ChainTokenPair::new(host_chain_id, host_tokens.weth()),

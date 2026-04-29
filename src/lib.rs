@@ -39,6 +39,9 @@ mod allowance;
 pub(crate) use allowance::AllowanceCache;
 pub use allowance::AllowanceRefreshTask;
 
+mod erc20;
+pub(crate) use erc20::{IERC20, query_balance};
+
 mod filler_task;
 pub use filler_task::FillerTask;
 

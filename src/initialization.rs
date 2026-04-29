@@ -1,9 +1,11 @@
 use crate::{
-    AllowanceCache, ChainTokenPair, Config, FillProviderType,
+    AllowanceCache, ChainTokenPair, Config, FillProviderType, KnownToken,
     metrics::{self, ConnectionTarget},
+    query_balance,
 };
 use alloy::{
     network::EthereumWallet,
+    primitives::Address,
     providers::{Provider, ProviderBuilder},
     rpc::client::BuiltInConnectionString,
     signers::Signer,
@@ -12,6 +14,7 @@ use alloy::{
 use backon::{ExponentialBuilder, Retryable};
 use core::fmt::{self, Display, Formatter};
 use eyre::{Context, Result, bail};
+use futures_util::future::join_all;
 use init4_bin_base::{
     deps::tracing::{debug, info, instrument, warn},
     utils::{
@@ -19,7 +22,7 @@ use init4_bin_base::{
         signer::{LocalOrAws, LocalOrAwsConfig},
     },
 };
-use signet_constants::SignetConstants;
+use signet_constants::{SignetConstants, SignetSystemConstants};
 use signet_tx_cache::TxCache;
 use std::{
     num::NonZeroUsize,
@@ -64,11 +67,19 @@ impl FillerContext {
                 bail!("initialization cancelled");
             }
             result = async {
-                try_join!(
+                let (host_provider, ru_provider, tx_cache) = try_join!(
                     connect_to_host_provider(config.host_rpc(), wallet.clone()),
                     connect_to_rollup_provider(config.ru_rpc(), wallet),
                     connect_to_tx_cache(config.constants().environment().transaction_cache())
+                )?;
+                log_startup_balances(
+                    signer.address(),
+                    &host_provider,
+                    &ru_provider,
+                    config.constants().system(),
                 )
+                .await;
+                Ok::<_, eyre::Report>((host_provider, ru_provider, tx_cache))
             } => result.wrap_err("initialization failure")?,
         };
         let allowance_cache = AllowanceCache::new();
@@ -213,6 +224,58 @@ async fn connect_to_tx_cache(url: &str) -> Result<TxCache> {
 
     info!("connected to transaction cache");
     Ok(tx_cache)
+}
+
+/// Queries the filler's balance for every [`KnownToken`] and logs one line per token. Emits a
+/// summary warning if the filler has no non-zero balance across any known token - the most common
+/// cause is a misconfigured signer or an unfunded deployment, and surfacing it at startup saves
+/// operators from waiting for orders to arrive and fail before they notice.
+#[instrument(skip_all, fields(filler = %filler_address))]
+async fn log_startup_balances(
+    filler_address: Address,
+    host_provider: &FillProviderType,
+    ru_provider: &FillProviderType,
+    constants: &SignetSystemConstants,
+) {
+    let ru_chain_id = constants.ru_chain_id();
+    let results =
+        join_all(KnownToken::ALL.iter().map(|known| {
+            let chain_token = known.resolve(constants);
+            let provider =
+                if chain_token.chain_id() == ru_chain_id { ru_provider } else { host_provider };
+            async move {
+                (chain_token, query_balance(provider, filler_address, chain_token.token()).await)
+            }
+        }))
+        .await;
+
+    let total = results.len();
+    let mut non_zero_count = 0_usize;
+    let mut error_count = 0_usize;
+    for (chain_token, result) in results {
+        result
+            .map(|balance| {
+                if !balance.is_zero() {
+                    non_zero_count += 1;
+                }
+                info!(%chain_token, %balance, "startup balance");
+            })
+            .unwrap_or_else(|error| {
+                error_count += 1;
+                metrics::record_preflight_query_error(metrics::PreflightQuery::Balance);
+                warn!(%chain_token, error = format!("{error:#}"), "failed to query startup balance");
+            });
+    }
+
+    if total > 0 && error_count == total {
+        warn!("all startup balance queries failed; could not determine whether filler is funded");
+    } else if non_zero_count == 0 {
+        warn!(
+            error_count,
+            "no non-zero balance found among successfully-queried tokens; check funding and \
+            configuration"
+        );
+    }
 }
 
 const fn backoff() -> ExponentialBuilder {

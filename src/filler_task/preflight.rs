@@ -1,22 +1,10 @@
-use crate::{AllowanceCache, ChainTokenPair, metrics};
-use alloy::{
-    primitives::{Address, U256},
-    providers::Provider,
-    sol,
-};
+use crate::{AllowanceCache, ChainTokenPair, metrics, query_balance};
+use alloy::primitives::{Address, U256};
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use init4_bin_base::deps::tracing::{debug, instrument, warn};
 use signet_constants::{NATIVE_TOKEN_ADDRESS, SignetSystemConstants};
 use signet_types::SignedOrder;
 use std::collections::{HashMap, HashSet};
-
-sol! {
-    /// Minimal ERC20 interface for balance queries.
-    #[sol(rpc)]
-    interface IERC20Balance {
-        function balanceOf(address account) external view returns (uint256);
-    }
-}
 
 /// Token budget tracker for a single processing cycle. Initialized from fresh balance queries and
 /// a snapshot of the allowance cache, then decremented as orders are accepted.
@@ -111,20 +99,18 @@ impl WorkingMap {
             .map(|(chain_token, allowance)| async move {
                 let provider =
                     if chain_token.chain_id() == ru_chain_id { ru_provider } else { host_provider };
-                let balance = if chain_token.token() == NATIVE_TOKEN_ADDRESS {
-                    provider.get_balance(filler_address).await.map_err(|error| {
-                        warn!(%error, %chain_token, "failed to query native balance");
+                query_balance(provider, filler_address, chain_token.token())
+                    .await
+                    .map_err(|error| {
                         metrics::record_preflight_query_error(metrics::PreflightQuery::Balance);
+                        warn!(
+                            %chain_token,
+                            error = format!("{error:#}"),
+                            "failed to query token balance",
+                        );
                     })
-                } else {
-                    let contract = IERC20Balance::new(chain_token.token(), provider);
-                    let balance_call = contract.balanceOf(filler_address);
-                    balance_call.call().await.map_err(|error| {
-                        warn!(%error, %chain_token, "failed to query token balance");
-                        metrics::record_preflight_query_error(metrics::PreflightQuery::Balance);
-                    })
-                };
-                balance.ok().map(|balance| (chain_token, TokenBudget { balance, allowance }))
+                    .ok()
+                    .map(|balance| (chain_token, TokenBudget { balance, allowance }))
             })
             .collect::<FuturesUnordered<_>>()
             .filter_map(|result| async { result })

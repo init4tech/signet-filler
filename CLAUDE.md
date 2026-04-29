@@ -12,8 +12,9 @@ src/lib.rs - Library root, signal handling, module exports
 src/config.rs - Environment-based configuration via `FromEnv` derive macro
 src/allowance.rs - AllowanceCache with background Permit2 allowance refresh task (10-min interval)
 src/chain_token_pair.rs - KnownToken enum, ChainTokenPair: (chain_id, token) identifier with human-readable Display
+src/erc20.rs - Shared minimal ERC20 interface (balanceOf + allowance) used by allowance cache, preflight check, and startup balance report
+src/initialization.rs - FillerContext with provider/signer/tx-cache connection (with retry and transient error classification), plus one-shot startup balance reporting for every known token
 src/filler_task/mod.rs - FillerTask struct: slot-aligned filler loop, order processing pipeline (profitability scoring/sorting, budget check, Permit2 nonce check)
-src/filler_task/initialization.rs - Provider/signer/tx-cache connection with retry, transient error classification
 src/filler_task/preflight.rs - WorkingMap: per-cycle token budget tracking (fresh balances + cached allowances), ERC20 balance queries
 src/metrics.rs - Prometheus metric definitions and recording helpers (counters, gauges, histograms)
 src/service.rs - Healthcheck HTTP server (axum, graceful shutdown via CancellationToken)
@@ -50,4 +51,5 @@ Dockerfile - Multi-stage cargo-chef Docker build (rust:bookworm → debian:bookw
 - Orders per bundle can be capped via `SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE` (default unset). When the selected order count exceeds the cap, orders are chunked (profitability order preserved) and each chunk is submitted as its own fill bundle sequentially - submitting sequentially ensures the most profitable chunk acquires the lowest nonce, and alloy's `CachedNonceManager` then hands out consecutive nonces so multiple bundles can land across the target-block window in profitability order
 - Permit2 allowances are cached by a background task (10-min refresh); balances are queried fresh each cycle
 - Per-cycle `WorkingMap` tracks running balance/allowance budgets, decremented as orders are accepted (MAX allowances are not decremented)
+- At startup, `FillerContext::initialize` queries the filler's balance for every `KnownToken` on both chains and logs one line per token; a summary warning is emitted if no known token has a non-zero balance
 - Graceful shutdown via `CancellationToken` propagated through all async tasks
