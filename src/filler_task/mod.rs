@@ -5,7 +5,7 @@ use alloy::{primitives::B256, signers::Signer};
 use eyre::{Context, Report, Result, bail};
 use futures_util::{TryStreamExt, future::join_all};
 use init4_bin_base::{
-    deps::tracing::{debug, error, info, instrument, trace, warn},
+    deps::tracing::{Instrument, debug, error, info, info_span, instrument, trace, warn},
     utils::signer::LocalOrAws,
 };
 use lru::LruCache;
@@ -47,6 +47,7 @@ pub struct FillerTask {
     allowance_cache: AllowanceCache,
     filled_orders: Mutex<LruCache<B256, ()>>,
     target_blocks: u8,
+    max_orders_per_bundle: Option<NonZeroUsize>,
     block_lead_duration: Duration,
     slot_duration: u64,
     host_start_timestamp: u64,
@@ -93,6 +94,7 @@ impl FillerTask {
             allowance_cache: context.allowance_cache().clone(),
             filled_orders: Mutex::new(LruCache::new(FILLED_ORDERS_CACHE_SIZE)),
             target_blocks,
+            max_orders_per_bundle: context.max_orders_per_bundle(),
             block_lead_duration,
             slot_duration,
             host_start_timestamp: context.constants().system().host().start_timestamp(),
@@ -179,7 +181,7 @@ impl FillerTask {
             return Ok(());
         }
 
-        self.submit_bundle(orders_to_fill).await;
+        self.submit_bundles(orders_to_fill).await;
         Ok(())
     }
 
@@ -304,11 +306,55 @@ impl FillerTask {
         orders_to_fill
     }
 
-    /// Submits a fill bundle and records metrics.
-    #[instrument(skip_all, fields(orders_in_bundle = orders_to_fill.len()))]
-    async fn submit_bundle(&self, orders_to_fill: Vec<SignedOrder>) {
-        let orders_in_bundle = orders_to_fill.len();
-        match self.filler.fill(orders_to_fill, self.target_blocks).await {
+    /// Chunks orders by `max_orders_per_bundle` and submits each chunk sequentially so the most
+    /// profitable chunk acquires the lowest nonce via `CachedNonceManager`. Relies on the builder
+    /// ordering a sender's txs by nonce within a block for profitability ordering to hold.
+    ///
+    /// Stops submitting on the first chunk that fails to submit: `CachedNonceManager` advances its
+    /// cached nonce on every call regardless of submission outcome, so if chunk K fails the
+    /// builder sees a nonce gap at K and chunks K+1.. cannot land anyway - continuing would just
+    /// waste RPC calls and muddle metrics.
+    #[instrument(skip_all, fields(orders_to_fill = orders_to_fill.len()))]
+    async fn submit_bundles(&self, orders_to_fill: Vec<SignedOrder>) {
+        debug_assert!(!orders_to_fill.is_empty(), "orders_to_fill is empty");
+        let chunks = chunk_orders(orders_to_fill, self.max_orders_per_bundle);
+        let chunk_count = chunks.len();
+        if self.max_orders_per_bundle.is_some() {
+            metrics::record_chunks_per_cycle(chunk_count as f64);
+        }
+        let mut successful_chunks = 0_usize;
+        for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+            let span = info_span!(
+                "submit_one_bundle",
+                orders_in_bundle = chunk.len(),
+                chunk_index = chunk_index,
+                chunk_count = chunk_count,
+            );
+            if !self.submit_one_bundle(chunk).instrument(span).await {
+                break;
+            }
+            successful_chunks += 1;
+        }
+        if successful_chunks > 0 && successful_chunks < chunk_count {
+            warn!(
+                successful_chunks,
+                chunk_count,
+                "stopped submitting after a chunk failed; remaining chunks skipped to avoid \
+                 creating a nonce gap the builder cannot fill"
+            );
+        }
+    }
+
+    /// Submits a single fill bundle and records metrics. Returns `true` on success.
+    async fn submit_one_bundle(&self, orders: Vec<SignedOrder>) -> bool {
+        debug_assert!(!orders.is_empty(), "orders is empty");
+        let orders_in_bundle = orders.len();
+        // Record attempted-bundle size regardless of submission outcome so the histogram and
+        // counter reflect what we tried to fill, not just what succeeded. Success / failure is
+        // carried by the `BUNDLES` counter's `result` label.
+        metrics::record_orders_in_bundle(orders_in_bundle as u64);
+        metrics::record_orders_per_bundle(orders_in_bundle as f64);
+        match self.filler.fill(orders, self.target_blocks).await {
             Ok(responses) => {
                 info!(
                     bundle_ids = ?responses.iter().map(|response| response.id).collect::<Vec<_>>(),
@@ -316,12 +362,12 @@ impl FillerTask {
                     "successfully submitted fill bundle"
                 );
                 metrics::record_bundle(metrics::SubmissionResult::Success);
-                metrics::record_orders_in_bundle(orders_in_bundle as u64);
-                metrics::record_orders_per_bundle(orders_in_bundle as f64);
+                true
             }
             Err(error) => {
                 warn!(%error, orders_in_bundle, "failed to fill orders");
                 metrics::record_bundle(metrics::SubmissionResult::Failure);
+                false
             }
         }
     }
@@ -390,6 +436,25 @@ impl FillerTask {
     }
 }
 
+/// Splits `orders` into chunks of at most `cap` while preserving order. Returns a single chunk
+/// containing all orders when `cap` is `None` or when `orders.len() <= cap`.
+fn chunk_orders(mut orders: Vec<SignedOrder>, cap: Option<NonZeroUsize>) -> Vec<Vec<SignedOrder>> {
+    debug_assert!(!orders.is_empty(), "orders is empty");
+    // Uses `split_off` rather than `Vec::chunks().map(<to_vec>)` to avoid cloning each
+    // `SignedOrder` (which carries a `Vec<TokenPermissions>` and `Vec<Output>`).
+    let Some(cap) = cap.map(NonZeroUsize::get) else {
+        return vec![orders];
+    };
+    let mut chunks = Vec::with_capacity(orders.len().div_ceil(cap));
+    while orders.len() > cap {
+        let rest = orders.split_off(cap);
+        chunks.push(orders);
+        orders = rest;
+    }
+    chunks.push(orders);
+    chunks
+}
+
 /// Returns `Ok(Some(order))` if the order's Permit2 deadline allows it to land in at least the
 /// first target block of this cycle, or `Ok(None)` if it cannot. `earliest_fill_timestamp`
 /// should be `now + block_lead_duration - DEADLINE_DRIFT_BUFFER_SECS`: an order whose deadline
@@ -432,7 +497,7 @@ mod tests {
     use alloy::primitives::{Address, Bytes, U256};
     use signet_zenith::RollupOrders::{Permit2Batch, PermitBatchTransferFrom, TokenPermissions};
 
-    fn order_with_deadline(deadline: u64) -> SignedOrder {
+    fn build_order(id: u64, deadline: u64) -> SignedOrder {
         SignedOrder::new(
             Permit2Batch {
                 permit: PermitBatchTransferFrom {
@@ -440,7 +505,7 @@ mod tests {
                         token: Address::ZERO,
                         amount: U256::from(1u64),
                     }],
-                    nonce: U256::ZERO,
+                    nonce: U256::from(id),
                     deadline: U256::from(deadline),
                 },
                 owner: Address::ZERO,
@@ -448,6 +513,10 @@ mod tests {
             },
             vec![],
         )
+    }
+
+    fn order_with_deadline(deadline: u64) -> SignedOrder {
+        build_order(0, deadline)
     }
 
     #[tokio::test]
@@ -478,5 +547,64 @@ mod tests {
         let order = order_with_deadline(999);
         let kept = not_expired(order, 1_000).await.expect("not_expired never errors");
         assert!(kept.is_none(), "order with deadline one second in the past should be dropped");
+    }
+
+    // `build_order`'s `id` becomes the Permit2 nonce, used here purely as a distinguishing id so
+    // the chunking tests can assert on order identity.
+    fn distinguishable_orders(count: u64) -> Vec<SignedOrder> {
+        (0..count).map(|id| build_order(id, 0)).collect()
+    }
+
+    fn ids(orders: &[SignedOrder]) -> Vec<u64> {
+        orders.iter().map(|order| order.permit().permit.nonce.saturating_to()).collect()
+    }
+
+    #[test]
+    fn chunk_orders_returns_single_chunk_when_cap_unset() {
+        let chunks = chunk_orders(distinguishable_orders(12), None);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(ids(&chunks[0]), (0..12).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn chunk_orders_returns_single_chunk_when_within_cap() {
+        let chunks = chunk_orders(distinguishable_orders(3), NonZeroUsize::new(5));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(ids(&chunks[0]), (0..3).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn chunk_orders_splits_into_equal_chunks_and_preserves_order() {
+        let chunks = chunk_orders(distinguishable_orders(10), NonZeroUsize::new(5));
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(ids(&chunks[0]), (0..5).collect::<Vec<_>>());
+        assert_eq!(ids(&chunks[1]), (5..10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn chunk_orders_leaves_short_final_chunk_for_uneven_split() {
+        let chunks = chunk_orders(distinguishable_orders(7), NonZeroUsize::new(3));
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(ids(&chunks[0]), vec![0, 1, 2]);
+        assert_eq!(ids(&chunks[1]), vec![3, 4, 5]);
+        assert_eq!(ids(&chunks[2]), vec![6]);
+    }
+
+    // Boundary test: the split loop uses `>` rather than `>=`, so with `orders.len() == cap` we
+    // expect a single chunk holding every order.
+    #[test]
+    fn chunk_orders_returns_single_chunk_when_count_equals_cap() {
+        let chunks = chunk_orders(distinguishable_orders(5), NonZeroUsize::new(5));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(ids(&chunks[0]), (0..5).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn chunk_orders_cap_of_one_gives_one_order_per_chunk() {
+        let chunks = chunk_orders(distinguishable_orders(3), NonZeroUsize::new(1));
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(ids(&chunks[0]), vec![0]);
+        assert_eq!(ids(&chunks[1]), vec![1]);
+        assert_eq!(ids(&chunks[2]), vec![2]);
     }
 }
