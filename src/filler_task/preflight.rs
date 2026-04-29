@@ -51,8 +51,11 @@ pub(super) struct WorkingMap {
 }
 
 impl WorkingMap {
-    /// Builds a working map for the output tokens needed by the given candidates. Balances are
-    /// queried fresh from the chain; allowances are copied from the background-refreshed cache.
+    /// Builds a working map for the output tokens needed by the given candidates and any extra
+    /// tokens earmarked by in-flight bundles. Balances are queried fresh from the chain;
+    /// allowances are copied from the background-refreshed cache. Each earmarked amount is
+    /// pre-decremented from its budget so candidates that share a token with an in-flight bundle
+    /// see only the funds that aren't already committed.
     #[instrument(skip_all, name = "build_working_map", fields(candidates_len = candidates.len()))]
     pub(super) async fn build(
         candidates: &[(i128, SignedOrder)],
@@ -61,25 +64,17 @@ impl WorkingMap {
         host_provider: &super::FillProviderType,
         constants: &SignetSystemConstants,
         allowance_cache: &AllowanceCache,
+        earmarks: &HashMap<ChainTokenPair, U256>,
     ) -> Self {
         let ru_chain_id = constants.ru_chain_id();
         let host_chain_id = constants.host_chain_id();
 
-        // Collect unique tokens from all candidate outputs on known chains.
-        let tokens_needed: HashSet<ChainTokenPair> = candidates
-            .iter()
-            .flat_map(|(_margin, order)| order.outputs())
-            .filter_map(|output| {
-                let output_chain_id = u64::from(output.chainId);
-                (output_chain_id == ru_chain_id || output_chain_id == host_chain_id)
-                    .then(|| ChainTokenPair::new(output_chain_id, output.token))
-            })
-            .collect();
+        let tokens_needed = tokens_needed(candidates, earmarks, ru_chain_id, host_chain_id);
 
         // Get the filler's allowance for each token from the allowance cache.
         let allowances: HashMap<ChainTokenPair, U256> = tokens_needed
-            .into_iter()
-            .map(|chain_token| {
+            .iter()
+            .map(|&chain_token| {
                 // Native tokens don't need Permit2 allowance.
                 let allowance = if chain_token.token() == NATIVE_TOKEN_ADDRESS {
                     U256::MAX
@@ -93,10 +88,11 @@ impl WorkingMap {
             })
             .collect();
 
-        // Query fresh balances concurrently, pairing each with its cached allowance.
-        let inner = allowances
+        // Query fresh balances concurrently. Tokens whose query fails are absent from the result;
+        // `compose` then drops them in line with the documented fail-open policy.
+        let balances: HashMap<ChainTokenPair, U256> = tokens_needed
             .into_iter()
-            .map(|(chain_token, allowance)| async move {
+            .map(|chain_token| async move {
                 let provider =
                     if chain_token.chain_id() == ru_chain_id { ru_provider } else { host_provider };
                 query_balance(provider, filler_address, chain_token.token())
@@ -110,12 +106,38 @@ impl WorkingMap {
                         );
                     })
                     .ok()
-                    .map(|balance| (chain_token, TokenBudget { balance, allowance }))
+                    .map(|balance| (chain_token, balance))
             })
             .collect::<FuturesUnordered<_>>()
-            .filter_map(|result| async { result })
+            .filter_map(|result| async move { result })
             .collect()
             .await;
+
+        Self::compose(allowances, balances, earmarks)
+    }
+
+    /// Pairs each token in `allowances` with its corresponding `balance` (dropping tokens whose
+    /// balance query failed - the documented fail-open policy), then pre-decrements each surviving
+    /// budget by any in-flight earmark.
+    fn compose(
+        allowances: HashMap<ChainTokenPair, U256>,
+        balances: HashMap<ChainTokenPair, U256>,
+        earmarks: &HashMap<ChainTokenPair, U256>,
+    ) -> Self {
+        let mut inner: HashMap<ChainTokenPair, TokenBudget> = allowances
+            .into_iter()
+            .filter_map(|(chain_token, allowance)| {
+                balances
+                    .get(&chain_token)
+                    .map(|&balance| (chain_token, TokenBudget { balance, allowance }))
+            })
+            .collect();
+
+        for (chain_token, &amount) in earmarks {
+            if let Some(budget) = inner.get_mut(chain_token) {
+                budget.decrement(amount);
+            }
+        }
 
         Self { inner }
     }
@@ -163,6 +185,27 @@ impl WorkingMap {
             .collect();
         Self { inner }
     }
+}
+
+/// Unique tokens the working map should track this cycle: every candidate output on a known chain,
+/// plus every token earmarked by an in-flight bundle.
+fn tokens_needed(
+    candidates: &[(i128, SignedOrder)],
+    earmarks: &HashMap<ChainTokenPair, U256>,
+    ru_chain_id: u64,
+    host_chain_id: u64,
+) -> HashSet<ChainTokenPair> {
+    let mut tokens: HashSet<ChainTokenPair> = candidates
+        .iter()
+        .flat_map(|(_margin, order)| order.outputs())
+        .filter_map(|output| {
+            let output_chain_id = u64::from(output.chainId);
+            (output_chain_id == ru_chain_id || output_chain_id == host_chain_id)
+                .then(|| ChainTokenPair::new(output_chain_id, output.token))
+        })
+        .collect();
+    tokens.extend(earmarks.keys().copied());
+    tokens
 }
 
 #[cfg(test)]
@@ -377,5 +420,115 @@ mod tests {
         assert_eq!(accepted.len(), 2);
         assert_eq!(accepted[0].order_hash(), orders[0].order_hash());
         assert_eq!(accepted[1].order_hash(), orders[1].order_hash());
+    }
+
+    // -- WorkingMap::compose / tokens_needed --
+
+    fn budget(map: &WorkingMap, key: &ChainTokenPair) -> Option<(U256, U256)> {
+        map.inner.get(key).map(|budget| (budget.balance, budget.allowance))
+    }
+
+    /// Earmarked-only tokens (no candidate this cycle) must still receive a budget entry so the
+    /// earmark has somewhere to apply. Without this, the earmark would be silently dropped and the
+    /// budget for that token would over-state the available funds in the next cycle.
+    #[test]
+    fn compose_creates_entry_for_earmarked_token_with_no_candidate() {
+        let pair = ChainTokenPair::new(CHAIN_A, TOKEN_X);
+        let allowances = HashMap::from([(pair, U256::from(1000))]);
+        let balances = HashMap::from([(pair, U256::from(500))]);
+        let earmarks = HashMap::from([(pair, U256::from(200))]);
+
+        let map = WorkingMap::compose(allowances, balances, &earmarks);
+
+        // Balance pre-decremented by the earmark (500 - 200 = 300); allowance also drops since it
+        // wasn't U256::MAX.
+        assert_eq!(budget(&map, &pair), Some((U256::from(300), U256::from(800))));
+    }
+
+    /// Earmark larger than the on-chain balance must saturate at zero rather than panic.
+    #[test]
+    fn compose_earmark_exceeds_balance_saturates_at_zero() {
+        let pair = ChainTokenPair::new(CHAIN_A, TOKEN_X);
+        let allowances = HashMap::from([(pair, U256::from(50))]);
+        let balances = HashMap::from([(pair, U256::from(100))]);
+        let earmarks = HashMap::from([(pair, U256::from(500))]);
+
+        let map = WorkingMap::compose(allowances, balances, &earmarks);
+
+        // Balance: 100 - 500 saturates to 0. Allowance: 50 - 500 saturates to 0.
+        assert_eq!(budget(&map, &pair), Some((U256::ZERO, U256::ZERO)));
+    }
+
+    /// `MAX` allowances must be left untouched even when the earmark would otherwise underflow.
+    #[test]
+    fn compose_max_allowance_is_not_decremented_by_earmark() {
+        let pair = ChainTokenPair::new(CHAIN_A, TOKEN_X);
+        let allowances = HashMap::from([(pair, U256::MAX)]);
+        let balances = HashMap::from([(pair, U256::from(100))]);
+        let earmarks = HashMap::from([(pair, U256::from(40))]);
+
+        let map = WorkingMap::compose(allowances, balances, &earmarks);
+
+        assert_eq!(budget(&map, &pair), Some((U256::from(60), U256::MAX)));
+    }
+
+    /// When `WorkingMap::build` cannot query the balance for a token, that token is absent from
+    /// the `balances` map handed to `compose`. The fail-open policy then drops it from the working
+    /// map entirely - both its budget entry and its earmark.
+    #[test]
+    fn compose_drops_token_when_balance_query_failed() {
+        let pair_x = ChainTokenPair::new(CHAIN_A, TOKEN_X);
+        let pair_y = ChainTokenPair::new(CHAIN_B, TOKEN_Y);
+        // Both tokens were tracked (allowances has them), but only TOKEN_X's balance was returned.
+        let allowances = HashMap::from([(pair_x, U256::from(100)), (pair_y, U256::from(100))]);
+        let balances = HashMap::from([(pair_x, U256::from(100))]);
+        // Earmark exists for the dropped token; it should silently disappear.
+        let earmarks = HashMap::from([(pair_y, U256::from(50))]);
+
+        let map = WorkingMap::compose(allowances, balances, &earmarks);
+
+        assert_eq!(budget(&map, &pair_x), Some((U256::from(100), U256::from(100))));
+        assert_eq!(budget(&map, &pair_y), None);
+    }
+
+    // -- tokens_needed --
+
+    /// Combines candidate output tokens (filtered to known chains) with every earmark key. The
+    /// earmark side is what `WorkingMap::build` relies on to ensure earmarked-only tokens receive
+    /// a budget entry.
+    #[test]
+    fn tokens_needed_unions_candidates_and_earmarks() {
+        let pair_x = ChainTokenPair::new(CHAIN_A, TOKEN_X);
+        let pair_y = ChainTokenPair::new(CHAIN_B, TOKEN_Y);
+
+        let candidates =
+            vec![(0_i128, order_with_outputs(vec![output(CHAIN_A as u32, TOKEN_X, 1)]))];
+        let earmarks = HashMap::from([(pair_y, U256::from(1))]);
+
+        let tokens = tokens_needed(&candidates, &earmarks, CHAIN_A, CHAIN_B);
+
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens.contains(&pair_x));
+        assert!(tokens.contains(&pair_y));
+    }
+
+    /// Candidate outputs targeting an unknown chain are dropped. Earmark keys are passed through
+    /// verbatim - the earmark map is built upstream from chain-filtered outputs already.
+    #[test]
+    fn tokens_needed_drops_candidate_outputs_on_unknown_chains() {
+        const UNKNOWN_CHAIN: u32 = 999;
+        let candidates = vec![(
+            0_i128,
+            order_with_outputs(vec![
+                output(CHAIN_A as u32, TOKEN_X, 1),
+                output(UNKNOWN_CHAIN, TOKEN_Y, 1),
+            ]),
+        )];
+        let earmarks = HashMap::new();
+
+        let tokens = tokens_needed(&candidates, &earmarks, CHAIN_A, CHAIN_B);
+
+        assert_eq!(tokens.len(), 1);
+        assert!(tokens.contains(&ChainTokenPair::new(CHAIN_A, TOKEN_X)));
     }
 }

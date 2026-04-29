@@ -35,3 +35,4 @@ tracing = "0.1.44"
 
 [dev-dependencies]
 signet-zenith = "0.16.0-rc.16"
+tokio = { version = "1.49.0", features = ["test-util"] }
