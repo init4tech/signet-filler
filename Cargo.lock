@@ -5086,9 +5086,8 @@ dependencies = [
 
 [[package]]
 name = "signet-bundle"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dafb04a643cee29180ce8ae2067c81691417bc6ca6ac350146652a3f84576685"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "serde",
@@ -5102,9 +5101,8 @@ dependencies = [
 
 [[package]]
 name = "signet-constants"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4360f5a5706c7a9d6ddea3b3d8ab7721f7341c5242bc7f3857967f28090568d"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "serde",
@@ -5114,9 +5112,8 @@ dependencies = [
 
 [[package]]
 name = "signet-evm"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05cd7eb4c1a23f8b3742084283c690d04fda828f8c7aaa232b0d0a8d89861267"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "bitflags",
@@ -5131,9 +5128,8 @@ dependencies = [
 
 [[package]]
 name = "signet-extract"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f23779af433acdbac5fb7a5e1489f5a1caab72f5337e2ee640c030a3bdcfb6b"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "signet-types",
@@ -5168,9 +5164,8 @@ dependencies = [
 
 [[package]]
 name = "signet-journal"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4c3c665f734b1cb68ee2a0263032fd171a3737927b4793d11377b8e917f05e7"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "futures-util",
@@ -5180,9 +5175,8 @@ dependencies = [
 
 [[package]]
 name = "signet-orders"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed6d995fdf51135e4cc79b53b72387a8f872157b5ed13661b4927f21ca9aa715"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "chrono",
@@ -5198,9 +5192,8 @@ dependencies = [
 
 [[package]]
 name = "signet-tx-cache"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba06dc92c72b877f042ba141c7ee553c68aab1c6e077a3ba1adb2eae17fdaff4"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "futures-util",
@@ -5217,9 +5210,8 @@ dependencies = [
 
 [[package]]
 name = "signet-types"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ad0d5db88367e5f2433e1cdd74017cf399dd985906be905032cba1ad314c30f"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "chrono",
@@ -5231,9 +5223,8 @@ dependencies = [
 
 [[package]]
 name = "signet-zenith"
-version = "0.16.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cafc152356fad0f4461af607af6e4151a3a577b55007a60ce5587969127a6e5"
+version = "0.16.3"
+source = "git+https://github.com/init4tech/signet-sdk.git?branch=fraser%2Feng-1789%2Fstream-combinators#3b3003acd696f078e305651e836d16762704b702"
 dependencies = [
  "alloy",
  "alloy-core",
