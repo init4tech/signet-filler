@@ -35,14 +35,3 @@ tracing = "0.1.44"
 
 [dev-dependencies]
 signet-zenith = "0.16.3"
-
-[patch.crates-io]
-signet-bundle = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-constants = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-evm = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-extract = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-journal = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-orders = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-tx-cache = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-types = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
-signet-zenith = { git = "https://github.com/init4tech/signet-sdk.git", branch = "fraser/eng-1789/stream-combinators" }
