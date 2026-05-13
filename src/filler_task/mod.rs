@@ -35,6 +35,18 @@ const FILLED_ORDERS_CACHE_SIZE: NonZeroUsize = NonZeroUsize::new(10240).unwrap()
 /// between the filler and the host chain.
 const DEADLINE_DRIFT_BUFFER_SECS: u64 = 5;
 
+/// Seconds from `now` until the latest possible inclusion timestamp of a fill bundle.
+/// Covers the block-lead, the full target-block window, and the drift buffer.
+/// Used as both the offset on the filler's own signed-fill deadline and the cutoff
+/// for dropping owner-signed orders whose Permit2 deadline won't survive submission.
+const fn inclusion_window_offset_secs(
+    block_lead_secs: u64,
+    target_blocks: u8,
+    slot_duration: u64,
+) -> u64 {
+    block_lead_secs + (target_blocks as u64) * slot_duration + DEADLINE_DRIFT_BUFFER_SECS
+}
+
 type Filler = signet_orders::Filler<
     LocalOrAws,
     TxCache,
@@ -73,9 +85,11 @@ impl FillerTask {
         // Keep the Permit2 signature valid from signing time (`block_lead_duration` before block N)
         // through the end of block N+target_blocks-1, with an extra buffer for signing/network
         // latency and clock drift.
-        let deadline_offset = block_lead_duration.as_secs()
-            + u64::from(target_blocks) * slot_duration
-            + DEADLINE_DRIFT_BUFFER_SECS;
+        let deadline_offset = inclusion_window_offset_secs(
+            block_lead_duration.as_secs(),
+            target_blocks,
+            slot_duration,
+        );
         let filler = Filler::new(
             context.signer().clone(),
             context.tx_cache().clone(),
@@ -197,20 +211,25 @@ impl FillerTask {
             .duration_since(UNIX_EPOCH)
             .expect("system clock set before UNIX epoch")
             .as_secs();
-        // Subtract the drift buffer for symmetry with the sign-side deadline, so an order whose
-        // deadline is within the buffer of the first target block isn't prematurely dropped here
-        // while the sign path would still have accepted it.
-        let earliest_fill_timestamp =
-            (now + self.block_lead_duration.as_secs()).saturating_sub(DEADLINE_DRIFT_BUFFER_SECS);
+        // Drop any order whose Permit2 deadline won't survive the latest possible
+        // inclusion timestamp of the bundle (last target block + drift buffer).
+        // Mirrors the sign-side deadline so the filter and the filler's own fill
+        // deadline agree.
+        let latest_inclusion_timestamp = now
+            + inclusion_window_offset_secs(
+                self.block_lead_duration.as_secs(),
+                self.target_blocks,
+                self.slot_duration,
+            );
 
-        let not_expired = not_expired_at(move || earliest_fill_timestamp);
+        let not_expired = not_expired_at(move || latest_inclusion_timestamp);
         let not_expired_with_metric = move |order: &SignedOrder| {
             let kept = not_expired(order);
             if !kept {
                 trace!(
                     order_hash = %order.order_hash(),
                     deadline = %order.permit().permit.deadline,
-                    earliest_fill_timestamp,
+                    latest_inclusion_timestamp,
                     "skipping expired order"
                 );
                 metrics::record_order_skipped(metrics::OrderSkippedReason::Expired);
@@ -472,6 +491,10 @@ mod tests {
     use signet_zenith::RollupOrders::{Permit2Batch, PermitBatchTransferFrom, TokenPermissions};
 
     fn build_order(id: u64) -> SignedOrder {
+        build_order_with_deadline(id, 0)
+    }
+
+    fn build_order_with_deadline(id: u64, deadline: u64) -> SignedOrder {
         SignedOrder::new(
             Permit2Batch {
                 permit: PermitBatchTransferFrom {
@@ -480,7 +503,7 @@ mod tests {
                         amount: U256::from(1u64),
                     }],
                     nonce: U256::from(id),
-                    deadline: U256::ZERO,
+                    deadline: U256::from(deadline),
                 },
                 owner: Address::ZERO,
                 signature: Bytes::from([0; 65]),
@@ -537,6 +560,44 @@ mod tests {
         let chunks = chunk_orders(distinguishable_orders(5), NonZeroUsize::new(5));
         assert_eq!(chunks.len(), 1);
         assert_eq!(ids(&chunks[0]), (0..5).collect::<Vec<_>>());
+    }
+
+    // Regression for the Permit2 SignatureExpired revert observed on 2026-05-12: the threshold
+    // formerly used `now + block_lead - DEADLINE_DRIFT_BUFFER_SECS`, which let orders whose
+    // deadline had already expired pass the filter and revert at submission. The fix uses the
+    // full inclusion window plus a drift buffer; the same offset is used to sign the filler's
+    // own fills, so the two stay in lockstep.
+    #[test]
+    fn inclusion_window_offset_covers_full_target_block_window_plus_buffer() {
+        // With block_lead=2, target_blocks=5, slot=12, buffer=5: 2 + 5*12 + 5 = 67.
+        assert_eq!(inclusion_window_offset_secs(2, 5, 12), 67);
+        // Minimal viable config still leaves room for the drift buffer.
+        assert_eq!(inclusion_window_offset_secs(0, 1, 12), 17);
+    }
+
+    #[test]
+    fn not_expired_filter_drops_orders_whose_deadline_wont_survive_inclusion_window() {
+        let now = 1_000_000_u64;
+        let cutoff = now + inclusion_window_offset_secs(2, 5, 12);
+        let filter = not_expired_at(move || cutoff);
+
+        // The exact bug scenario: deadline a handful of seconds before `now` slipped through
+        // the old filter (threshold was `now - 3`) and reverted at submission.
+        let expired = build_order_with_deadline(1, now - 3);
+        assert!(!filter(&expired), "deadline before now must be filtered");
+
+        // Deadline inside the inclusion window: would expire before the last target block can
+        // include the bundle.
+        let inside_window = build_order_with_deadline(2, cutoff - 1);
+        assert!(!filter(&inside_window), "deadline inside inclusion window must be filtered");
+
+        // `not_expired_at` is inclusive at the cutoff (matches signet-orders predicate semantics).
+        let at_boundary = build_order_with_deadline(3, cutoff);
+        assert!(filter(&at_boundary), "deadline exactly at cutoff is still valid");
+
+        // Plenty of headroom past the inclusion window is kept.
+        let well_past = build_order_with_deadline(4, cutoff + 300);
+        assert!(filter(&well_past));
     }
 
     #[test]
