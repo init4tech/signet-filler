@@ -107,10 +107,16 @@ impl InFlightTracker {
         }
     }
 
+    /// Runs `f` against the entry for `order_hash`, returning `None` if no entry exists. The
+    /// closure receives the entry regardless of expiry, so callers that care about TTL must
+    /// check `expires_at` themselves.
+    fn inspect<T>(&self, order_hash: &B256, f: impl FnOnce(&Entry) -> T) -> Option<T> {
+        self.inner.lock().unwrap().get(order_hash).map(f)
+    }
+
     /// Returns `true` if `order_hash` is currently tracked as in-flight and unexpired.
     pub(super) fn is_in_flight(&self, order_hash: &B256) -> bool {
-        let guard = self.inner.lock().unwrap();
-        guard.get(order_hash).is_some_and(|entry| entry.expires_at > Instant::now())
+        self.inspect(order_hash, |entry| entry.expires_at > Instant::now()).unwrap_or_default()
     }
 
     /// Returns the sum of earmarked amounts across unexpired tracked in-flight entries, grouped by
