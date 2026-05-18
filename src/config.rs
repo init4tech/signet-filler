@@ -254,3 +254,20 @@ pub fn config_from_env() -> Result<Config> {
     Config::from_env()
         .wrap_err("failed to configure filler (run with '--help' to see all required env vars)")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default chain name must parse as a known Signet chain. Catches both a missing
+    /// `KnownChains` variant (e.g. unintentional dep downgrade) and a typo in
+    /// `DEFAULT_CHAIN_NAME`.
+    #[test]
+    fn default_chain_name_parses() {
+        let constants: SignetConstants = DEFAULT_CHAIN_NAME
+            .parse()
+            .expect("DEFAULT_CHAIN_NAME must parse as a known Signet chain");
+        assert_eq!(constants.system().ru_chain_id(), 792669, "gouda rollup chain id");
+        assert_eq!(constants.system().host_chain_id(), 3151908, "parmigiana host chain id");
+    }
+}
