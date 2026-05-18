@@ -267,7 +267,7 @@ mod tests {
         let constants: SignetConstants = DEFAULT_CHAIN_NAME
             .parse()
             .expect("DEFAULT_CHAIN_NAME must parse as a known Signet chain");
-        assert_eq!(constants.system().ru_chain_id(), 792669, "gouda rollup chain id");
-        assert_eq!(constants.system().host_chain_id(), 3151908, "parmigiana host chain id");
+        assert_eq!(constants.system().ru_chain_id(), 792_669, "gouda rollup chain id");
+        assert_eq!(constants.system().host_chain_id(), 3_151_908, "parmigiana host chain id");
     }
 }
