@@ -17,6 +17,7 @@ const TARGET_BLOCKS_VAR: &str = "SIGNET_FILLER_TARGET_BLOCKS";
 const MAX_ORDERS_PER_BUNDLE_VAR: &str = "SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE";
 
 const DEFAULT_CHAIN_NAME: &str = "gouda";
+// Gouda is a rollup on the parmigiana host chain, so the host RPC endpoint stays parmigiana.
 const DEFAULT_HOST_RPC: &str = "https://host-rpc.parmigiana.signet.sh";
 const DEFAULT_RU_RPC: &str = "wss://rpc.gouda.signet.sh";
 const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_secs(2);
