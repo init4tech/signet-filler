@@ -15,9 +15,10 @@ path = "bin/filler.rs"
 [dependencies]
 init4-bin-base = { version = "0.18.0-rc.13", features = ["aws"] }
 # TODO(filler-gouda): revert to crates.io once signet-constants 0.19.x is published.
-# Tracked via the deploy plan cascade in /tmp/2026-05-17-parmigiana-host-deploy-plan.md
-# (signet-sdk #236 → bin-base #149 → storage #64 → node-components #144 → signet #105).
+# Publish cascade: signet-sdk #236 → bin-base #149 → storage #64 → node-components #144 → signet #105.
 # Branch: signet-sdk@feat/gouda-known-chain.
+# NOTE: Cargo.lock carries a duplicate signet-constants (0.16.3 via init4-bin-base,
+# 0.19.0 via this git-pin) until bin-base #149 lands and init4-bin-base is bumped here.
 signet-constants = { git = "https://github.com/init4tech/signet-sdk", rev = "ecce6a48a6af81c5f668c142b3a63452de02a146" }
 signet-orders    = { git = "https://github.com/init4tech/signet-sdk", rev = "ecce6a48a6af81c5f668c142b3a63452de02a146" }
 signet-tx-cache  = { git = "https://github.com/init4tech/signet-sdk", rev = "ecce6a48a6af81c5f668c142b3a63452de02a146" }
@@ -38,4 +39,5 @@ tokio-util = "0.7.18"
 tracing = "0.1.44"
 
 [dev-dependencies]
+# git-pin matches production deps above (see TODO(filler-gouda)).
 signet-zenith = { git = "https://github.com/init4tech/signet-sdk", rev = "ecce6a48a6af81c5f668c142b3a63452de02a146" }
