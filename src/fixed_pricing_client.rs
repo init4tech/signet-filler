@@ -40,7 +40,7 @@ impl FixedPricingClient {
     /// Returns the wrapped native token address for the given chain name, if one is defined.
     fn wrapped_token_address(chain_name: &str) -> Option<Address> {
         match chain_name {
-            "parmigiana" => Some(signet_constants::parmigiana::WRAPPED),
+            "gouda" => Some(signet_constants::gouda::WRAPPED),
             "mainnet" => Some(signet_constants::mainnet::WRAPPED),
             _ => None,
         }
@@ -176,18 +176,14 @@ mod tests {
         Output, Permit2Batch, PermitBatchTransferFrom, TokenPermissions,
     };
 
-    fn parmigiana_client(max_loss_percent: u8) -> FixedPricingClient {
-        FixedPricingClient::new(
-            &SignetSystemConstants::parmigiana(),
-            "parmigiana",
-            max_loss_percent,
-        )
+    fn gouda_client(max_loss_percent: u8) -> FixedPricingClient {
+        FixedPricingClient::new(&SignetSystemConstants::gouda(), "gouda", max_loss_percent)
     }
 
     /// Build a signed order with one USDC input and one USDC output at the given amounts (in raw
     /// 6-decimal units).
     fn usdc_order(input_amount: u64, output_amount: u64) -> SignedOrder {
-        let usdc = SignetSystemConstants::parmigiana().host().tokens().usdc();
+        let usdc = SignetSystemConstants::gouda().host().tokens().usdc();
         SignedOrder::new(
             Permit2Batch {
                 permit: PermitBatchTransferFrom {
@@ -214,7 +210,7 @@ mod tests {
 
     #[test]
     fn zero_max_loss_equal_values_is_acceptable() {
-        let client = parmigiana_client(0);
+        let client = gouda_client(0);
         let order = usdc_order(1_000_000, 1_000_000);
         // Equal values: margin = 0
         assert_eq!(client.profitability(&order).unwrap(), Some(0));
@@ -222,14 +218,14 @@ mod tests {
 
     #[test]
     fn zero_max_loss_input_less_than_output_is_not_acceptable() {
-        let client = parmigiana_client(0);
+        let client = gouda_client(0);
         let order = usdc_order(999_999, 1_000_000);
         assert_eq!(client.profitability(&order).unwrap(), None);
     }
 
     #[test]
     fn zero_max_loss_input_greater_than_output_is_acceptable() {
-        let client = parmigiana_client(0);
+        let client = gouda_client(0);
         let order = usdc_order(1_000_001, 1_000_000);
         let margin = client
             .profitability(&order)
@@ -242,7 +238,7 @@ mod tests {
 
     #[test]
     fn max_loss_100_always_acceptable() {
-        let client = parmigiana_client(100);
+        let client = gouda_client(100);
         // input * 100 >= output * (100 - 100) -> input * 100 >= 0 -> always true
         let order = usdc_order(1, 1_000_000);
         // 1 USDC in, 1_000_000 USDC out: margin should be deeply negative
@@ -257,7 +253,7 @@ mod tests {
 
     #[test]
     fn max_loss_101_overflows() {
-        let client = parmigiana_client(101);
+        let client = gouda_client(101);
         let order = usdc_order(1_000_000, 1_000_000);
         assert!(matches!(client.profitability(&order), Err(FixedPricingError::Overflow)));
     }
@@ -266,7 +262,7 @@ mod tests {
 
     #[test]
     fn standard_threshold_at_boundary_is_acceptable() {
-        let client = parmigiana_client(10);
+        let client = gouda_client(10);
         // input * 100 >= output * 90 -> 900_000 * 100 >= 1_000_000 * 90 -> 90M >= 90M
         let order = usdc_order(900_000, 1_000_000);
         let margin = client
@@ -279,7 +275,7 @@ mod tests {
 
     #[test]
     fn standard_threshold_just_below_boundary_is_not_acceptable() {
-        let client = parmigiana_client(10);
+        let client = gouda_client(10);
         // 899_999 * 100 = 89_999_900 < 1_000_000 * 90 = 90_000_000
         let order = usdc_order(899_999, 1_000_000);
         assert_eq!(client.profitability(&order).unwrap(), None);
@@ -287,7 +283,7 @@ mod tests {
 
     #[test]
     fn standard_threshold_above_boundary_is_acceptable() {
-        let client = parmigiana_client(10);
+        let client = gouda_client(10);
         let order = usdc_order(u64::MAX, 1_000_000);
         let margin = client
             .profitability(&order)
@@ -300,8 +296,8 @@ mod tests {
 
     #[test]
     fn no_inputs_returns_error() {
-        let client = parmigiana_client(10);
-        let usdc = SignetSystemConstants::parmigiana().host().tokens().usdc();
+        let client = gouda_client(10);
+        let usdc = SignetSystemConstants::gouda().host().tokens().usdc();
         let order = SignedOrder::new(
             Permit2Batch {
                 permit: PermitBatchTransferFrom {
@@ -324,8 +320,8 @@ mod tests {
 
     #[test]
     fn no_outputs_returns_error() {
-        let client = parmigiana_client(10);
-        let usdc = SignetSystemConstants::parmigiana().host().tokens().usdc();
+        let client = gouda_client(10);
+        let usdc = SignetSystemConstants::gouda().host().tokens().usdc();
         let order = SignedOrder::new(
             Permit2Batch {
                 permit: PermitBatchTransferFrom {
@@ -346,9 +342,9 @@ mod tests {
 
     #[test]
     fn unknown_token_returns_error() {
-        let client = parmigiana_client(10);
+        let client = gouda_client(10);
         let unknown = Address::repeat_byte(0xFF);
-        let usdc = SignetSystemConstants::parmigiana().host().tokens().usdc();
+        let usdc = SignetSystemConstants::gouda().host().tokens().usdc();
         let order = SignedOrder::new(
             Permit2Batch {
                 permit: PermitBatchTransferFrom {
@@ -376,8 +372,8 @@ mod tests {
 
     #[test]
     fn profitability_overflows_i128_on_huge_normalized_value() {
-        let client = parmigiana_client(0);
-        let usdc = SignetSystemConstants::parmigiana().host().tokens().usdc();
+        let client = gouda_client(0);
+        let usdc = SignetSystemConstants::gouda().host().tokens().usdc();
         // USDC normalization multiplies by 10^12 (price=1, scale=10^(18-6)). Using u128::MAX as
         // the raw amount produces a normalized value of ~3.4e50, well beyond i128::MAX (~1.7e38).
         // The U256 arithmetic and threshold check succeed, but the final i128 conversion fails.
@@ -401,8 +397,8 @@ mod tests {
 
     #[test]
     fn cross_token_normalization_equal_usd_value_is_acceptable() {
-        let client = parmigiana_client(0);
-        let constants = SignetSystemConstants::parmigiana();
+        let client = gouda_client(0);
+        let constants = SignetSystemConstants::gouda();
         let weth = constants.host().tokens().weth();
         let usdc = constants.host().tokens().usdc();
         // 1 WETH ($3000) input, 3000 USDC ($3000) output → equal normalized value

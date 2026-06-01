@@ -16,9 +16,9 @@ signet-filler --help
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SIGNET_FILLER_CHAIN_NAME` | Signet chain name | `parmigiana` |
+| `SIGNET_FILLER_CHAIN_NAME` | Signet chain name | `gouda` |
 | `SIGNET_FILLER_HOST_RPC_URL` | URL for Host RPC node (http/https/ws/wss) | `https://host-rpc.parmigiana.signet.sh` |
-| `SIGNET_FILLER_ROLLUP_RPC_URL` | URL for Rollup RPC node (ws/wss only) | `wss://rpc.parmigiana.signet.sh` |
+| `SIGNET_FILLER_ROLLUP_RPC_URL` | URL for Rollup RPC node (ws/wss only) | `wss://rpc.gouda.signet.sh` |
 | `SIGNET_FILLER_BLOCK_LEAD_DURATION_MS` | How far before each block boundary to submit fill bundles, in milliseconds | `2000` |
 | `SIGNET_FILLER_MAX_LOSS_PERCENT` | Maximum acceptable loss percent for order pricing (0-100) | `10` |
 | `SIGNET_FILLER_TARGET_BLOCKS` | Number of consecutive blocks to target per fill bundle (1-10) | `5` |

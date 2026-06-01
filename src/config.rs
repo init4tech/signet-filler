@@ -16,9 +16,10 @@ const MAX_LOSS_PERCENT_VAR: &str = "SIGNET_FILLER_MAX_LOSS_PERCENT";
 const TARGET_BLOCKS_VAR: &str = "SIGNET_FILLER_TARGET_BLOCKS";
 const MAX_ORDERS_PER_BUNDLE_VAR: &str = "SIGNET_FILLER_MAX_ORDERS_PER_BUNDLE";
 
-const DEFAULT_CHAIN_NAME: &str = "parmigiana";
+const DEFAULT_CHAIN_NAME: &str = "gouda";
+// Gouda is a rollup on the parmigiana host chain, so the host RPC endpoint stays parmigiana.
 const DEFAULT_HOST_RPC: &str = "https://host-rpc.parmigiana.signet.sh";
-const DEFAULT_RU_RPC: &str = "wss://rpc.parmigiana.signet.sh";
+const DEFAULT_RU_RPC: &str = "wss://rpc.gouda.signet.sh";
 const DEFAULT_BLOCK_LEAD_DURATION: Duration = Duration::from_secs(2);
 const DEFAULT_MAX_LOSS_PERCENT: u8 = 10;
 const DEFAULT_HEALTHCHECK_PORT: u16 = 8080;
@@ -32,7 +33,7 @@ const MAX_TARGET_BLOCKS: u8 = 10;
 struct ConfigInner {
     #[from_env(
         var = "SIGNET_FILLER_CHAIN_NAME",
-        desc = "Signet chain name [default: parmigiana]",
+        desc = "Signet chain name [default: gouda]",
         optional
     )]
     chain_name: Option<String>,
@@ -48,7 +49,7 @@ struct ConfigInner {
     #[from_env(
         var = "SIGNET_FILLER_ROLLUP_RPC_URL",
         desc = "URL for Rollup RPC node. This MUST be a valid WS url starting with ws:// or \
-            wss://. Http providers are not supported [default: wss://rpc.parmigiana.signet.sh]",
+            wss://. Http providers are not supported [default: wss://rpc.gouda.signet.sh]",
         optional
     )]
     ru_rpc: Option<String>,
@@ -112,7 +113,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// The Signet chain name (e.g. "parmigiana").
+    /// The Signet chain name (e.g. "gouda").
     pub const fn chain_name(&self) -> &str {
         self.chain_name.as_str()
     }
@@ -252,4 +253,21 @@ pub fn env_var_info() -> String {
 pub fn config_from_env() -> Result<Config> {
     Config::from_env()
         .wrap_err("failed to configure filler (run with '--help' to see all required env vars)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default chain name must parse as a known Signet chain. Catches both a missing
+    /// `KnownChains` variant (e.g. unintentional dep downgrade) and a typo in
+    /// `DEFAULT_CHAIN_NAME`.
+    #[test]
+    fn default_chain_name_parses() {
+        let constants: SignetConstants = DEFAULT_CHAIN_NAME
+            .parse()
+            .expect("DEFAULT_CHAIN_NAME must parse as a known Signet chain");
+        assert_eq!(constants.system().ru_chain_id(), 792_669, "gouda rollup chain id");
+        assert_eq!(constants.system().host_chain_id(), 3_151_908, "parmigiana host chain id");
+    }
 }

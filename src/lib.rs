@@ -1,4 +1,4 @@
-//! Signet filler service for Parmigiana testnet
+//! Signet filler service for Gouda testnet
 
 #![warn(
     missing_copy_implementations,

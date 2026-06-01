@@ -2,7 +2,7 @@
 
 **Keep this file and the readme up to date.** After any change to the repo (new files, renamed modules, added dependencies, changed conventions, etc.), update the relevant sections of this document and the README.md before finishing.
 
-Order filler service for the Signet Parmigiana testnet. Monitors a transaction cache for pending orders, checks they are within an acceptable loss threshold using hardcoded exchange rates, and submits fill bundles targeting configurable consecutive blocks shortly before each block boundary.
+Order filler service for the Signet Gouda testnet. Monitors a transaction cache for pending orders, checks they are within an acceptable loss threshold using hardcoded exchange rates, and submits fill bundles targeting configurable consecutive blocks shortly before each block boundary.
 
 ## Project Structure
 
